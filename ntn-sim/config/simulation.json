@@ -1,0 +1,25 @@
+{
+  "simulation": {
+    "duration_seconds": 3600.0,
+    "time_step_seconds": 1.0,
+    "seed": 42
+  },
+  "constellation": {
+    "planes": 6,
+    "satellites_per_plane": 12,
+    "altitude_km": 600.0,
+    "inclination_deg": 87.5
+  },
+  "gateways": [
+    {
+      "id": "gw-0",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "altitude_m": 10.0
+    }
+  ],
+  "traffic": {
+    "packet_generation_rate_pps": 100.0,
+    "packet_size_bytes": 1500
+  }
+}
