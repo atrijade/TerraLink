@@ -2,6 +2,7 @@
 
 #include "ntn-sim/utils/math_utils.h"
 #include <string>
+#include <cstdint>
 
 namespace NtnSim::Gateway {
 
