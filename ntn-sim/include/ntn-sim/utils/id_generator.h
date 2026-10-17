@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <string>
+#include <cstdint>
 
 namespace NtnSim::Utils {
 

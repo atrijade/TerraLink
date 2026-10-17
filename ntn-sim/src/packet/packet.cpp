@@ -11,10 +11,6 @@ uint64_t Packet::GetId() const {
     return m_id;
 }
 
-uint32_t Packet::GetBytesBytes() const { // Wait, matches the standard getters, but let's check sizeBytes
-    return m_sizeBytes;
-}
-
 uint32_t Packet::GetSizeBytes() const {
     return m_sizeBytes;
 }
