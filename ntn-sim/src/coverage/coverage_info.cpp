@@ -30,4 +30,12 @@ void CoverageInfo::SetElevationAngleDeg(double angle) {
     m_elevationAngleDeg = angle;
 }
 
+double CoverageInfo::GetLosVelocityKms() const {
+    return m_losVelocityKms;
+}
+
+void CoverageInfo::SetLosVelocityKms(double vel) {
+    m_losVelocityKms = vel;
+}
+
 } // namespace NtnSim::Coverage
