@@ -40,6 +40,9 @@ void SimulationController::InitializeEngines() {
     m_gateway = std::make_unique<Gateway::Gateway>("gw-0", gwPos);
     m_metricsEngine = std::make_unique<Metrics::MetricsEngine>();
     m_restApi = std::make_unique<Api::RestApi>();
+
+    // Wire PacketEngine to MetricsEngine for telemetry delivery
+    m_packetEngine->SetMetricsEngine(m_metricsEngine.get());
 }
 
 void SimulationController::StartSimulation() {

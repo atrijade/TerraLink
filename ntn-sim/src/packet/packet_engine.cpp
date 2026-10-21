@@ -1,17 +1,52 @@
 #include "ntn-sim/packet/packet_engine.h"
+#include "ntn-sim/metrics/metrics_engine.h"
+#include "ntn-sim/core/event_scheduler.h"
+#include "ntn-sim/core/event.h"
+#include <cmath>
+#include <algorithm>
 
 namespace NtnSim::Packet {
 
 PacketEngine::PacketEngine() {}
 
+PacketEngine::PacketEngine(std::shared_ptr<Metrics::MetricsEngine> metricsEngine)
+    : m_metricsEngineRaw(metricsEngine.get()),
+      m_metricsEngineShared(std::move(metricsEngine)) {}
+
+PacketEngine::PacketEngine(Metrics::MetricsEngine* metricsEngine)
+    : m_metricsEngineRaw(metricsEngine) {}
+
 PacketEngine::~PacketEngine() {}
+
+// =========================================================================
+// Phase 1 & 2: Packet Model & Buffer Management
+// =========================================================================
+
+uint64_t PacketEngine::GetNextPacketIdInternal() {
+    return m_nextPacketId++;
+}
 
 std::shared_ptr<Packet> PacketEngine::GeneratePacket(uint64_t packetId, uint32_t sizeBytes,
                                                     double creationTime, const std::string& srcNodeId,
                                                     const std::string& destNodeId,
                                                     uint32_t qosClass, uint32_t ttl,
                                                     double maxLifetimeSeconds) {
-    return std::make_shared<Packet>(packetId, sizeBytes, creationTime, srcNodeId, destNodeId, qosClass, ttl, maxLifetimeSeconds);
+    uint64_t assignedId = packetId;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (assignedId == 0) {
+            assignedId = m_nextPacketId++;
+        } else if (assignedId >= m_nextPacketId) {
+            m_nextPacketId = assignedId + 1;
+        }
+        m_totalSent++;
+        if (m_metricsEngineRaw) {
+            m_metricsEngineRaw->RecordPacketSent(assignedId, sizeBytes, creationTime);
+        }
+    }
+
+    return std::make_shared<Packet>(assignedId, sizeBytes, creationTime, srcNodeId,
+                                    destNodeId, qosClass, ttl, maxLifetimeSeconds);
 }
 
 void PacketEngine::ConfigureQueue(const std::string& queueId, size_t maxPackets, size_t maxSizeBytes) {
@@ -50,6 +85,10 @@ bool PacketEngine::EnqueuePacket(const std::string& queueId, std::shared_ptr<Pac
 
     if (packetLimitExceeded || byteLimitExceeded) {
         q.droppedPacketsCount++;
+        m_totalDropped++;
+        if (m_metricsEngineRaw) {
+            m_metricsEngineRaw->RecordPacketDropped(packet->GetId(), Metrics::PacketDropReason::QueueOverflow, enqueueTime);
+        }
         return false; // Dropped due to buffer overflow
     }
 
@@ -127,6 +166,319 @@ void PacketEngine::ClearQueue(const std::string& queueId) {
         }
         it->second.currentSizeBytes = 0;
     }
+}
+
+// =========================================================================
+// Phase 3: Traffic Generation Models (CBR & Poisson)
+// =========================================================================
+
+void PacketEngine::AddTrafficFlow(const TrafficFlowConfig& config) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    // Overwrite existing flow with same ID or add new
+    auto it = std::find_if(m_trafficFlows.begin(), m_trafficFlows.end(),
+                           [&config](const TrafficFlowConfig& f) { return f.flowId == config.flowId; });
+    if (it != m_trafficFlows.end()) {
+        *it = config;
+    } else {
+        m_trafficFlows.push_back(config);
+    }
+}
+
+bool PacketEngine::RemoveTrafficFlow(const std::string& flowId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = std::remove_if(m_trafficFlows.begin(), m_trafficFlows.end(),
+                             [&flowId](const TrafficFlowConfig& f) { return f.flowId == flowId; });
+    if (it != m_trafficFlows.end()) {
+        m_trafficFlows.erase(it, m_trafficFlows.end());
+        return true;
+    }
+    return false;
+}
+
+std::optional<TrafficFlowConfig> PacketEngine::GetTrafficFlow(const std::string& flowId) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& f : m_trafficFlows) {
+        if (f.flowId == flowId) {
+            return f;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<TrafficFlowConfig> PacketEngine::GetAllTrafficFlows() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_trafficFlows;
+}
+
+void PacketEngine::ClearTrafficFlows() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_trafficFlows.clear();
+}
+
+double PacketEngine::GetNextPoissonInterval(double packetRate) {
+    if (packetRate <= 0.0) {
+        return 1.0;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    // Exponential inter-arrival distribution with parameter lambda = packetRate:
+    // interval = -ln(U) / lambda, where U ~ Uniform(1e-7, 1.0)
+    double u = m_rng.GetUniformDouble(0.0000001, 1.0);
+    return -std::log(u) / packetRate;
+}
+
+void PacketEngine::ScheduleTrafficFlow(const TrafficFlowConfig& config, Core::EventScheduler& scheduler) {
+    AddTrafficFlow(config);
+    ScheduleTrafficFlowInternal(config, scheduler);
+}
+
+void PacketEngine::StartTrafficGeneration(Core::EventScheduler& scheduler) {
+    std::vector<TrafficFlowConfig> flowsCopy;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        flowsCopy = m_trafficFlows;
+    }
+    for (const auto& flow : flowsCopy) {
+        ScheduleTrafficFlowInternal(flow, scheduler);
+    }
+}
+
+void PacketEngine::ScheduleTrafficFlowInternal(const TrafficFlowConfig& config, Core::EventScheduler& scheduler) {
+    auto scheduleStep = std::make_shared<std::function<void(double)>>();
+
+    *scheduleStep = [this, config, &scheduler, scheduleStep](double currentSimTime) {
+        if (currentSimTime > config.stopTime) {
+            return;
+        }
+
+        // 1. Generate packet
+        auto pkt = GeneratePacket(0, config.packetSizeBytes, currentSimTime,
+                                  config.sourceId, config.destinationId,
+                                  config.qosClass, config.ttl, config.maxLifetimeSeconds);
+
+        // 2. Enqueue into source node's queue
+        EnqueuePacket(config.sourceId, pkt, currentSimTime);
+
+        // 3. Compute next generation time
+        double interval = 0.0;
+        if (config.pattern == TrafficPattern::CBR) {
+            interval = (config.packetRate > 0.0) ? (1.0 / config.packetRate) : 1.0;
+        } else {
+            interval = GetNextPoissonInterval(config.packetRate);
+        }
+
+        double nextTime = currentSimTime + interval;
+        if (nextTime <= config.stopTime) {
+            scheduler.ScheduleEvent(nextTime, 5, Core::EventType::GeneratePacket,
+                                    [scheduleStep, nextTime]() {
+                                        (*scheduleStep)(nextTime);
+                                    });
+        }
+    };
+
+    // Schedule the initial packet generation
+    scheduler.ScheduleEvent(config.startTime, 5, Core::EventType::GeneratePacket,
+                            [scheduleStep, startTime = config.startTime]() {
+                                (*scheduleStep)(startTime);
+                            });
+}
+
+// =========================================================================
+// Phase 4: Transmission & End-to-End Latency Modeling
+// =========================================================================
+
+double PacketEngine::CalculateTxDelay(uint32_t packetSizeBytes, double dataRateBps) {
+    if (dataRateBps <= 0.0) {
+        return 0.0;
+    }
+    return (static_cast<double>(packetSizeBytes) * 8.0) / dataRateBps;
+}
+
+double PacketEngine::CalculatePropDelay(double distanceMeters) {
+    if (distanceMeters <= 0.0) {
+        return 0.0;
+    }
+    return distanceMeters / SPEED_OF_LIGHT_M_S;
+}
+
+HopLatencyBreakdown PacketEngine::CalculateHopLatency(uint32_t packetSizeBytes, double dataRateBps,
+                                                     double distanceMeters, double queueDelaySeconds,
+                                                     double procDelaySeconds) const {
+    HopLatencyBreakdown breakdown;
+    breakdown.queueDelaySeconds = (queueDelaySeconds >= 0.0) ? queueDelaySeconds : 0.0;
+    breakdown.txDelaySeconds = CalculateTxDelay(packetSizeBytes, dataRateBps);
+    breakdown.propDelaySeconds = CalculatePropDelay(distanceMeters);
+    breakdown.procDelaySeconds = (procDelaySeconds >= 0.0) ? procDelaySeconds : 0.0;
+    breakdown.totalHopLatencySeconds = breakdown.queueDelaySeconds +
+                                       breakdown.txDelaySeconds +
+                                       breakdown.propDelaySeconds +
+                                       breakdown.procDelaySeconds;
+    return breakdown;
+}
+
+TransmissionResult PacketEngine::TransmitHop(std::shared_ptr<Packet> packet,
+                                            const std::string& nextNodeId,
+                                            double dataRateBps,
+                                            double distanceMeters,
+                                            double sinrDb,
+                                            double currentTime,
+                                            double minSinrThresholdDb,
+                                            double procDelaySeconds) {
+    TransmissionResult result;
+    if (!packet) {
+        result.success = false;
+        return result;
+    }
+
+    // 1. Check TTL decrement and expiry
+    if (!packet->DecrementTtl() || packet->IsExpired(currentTime)) {
+        result.success = false;
+        result.dropReason = Metrics::PacketDropReason::TtlExpired;
+        DropPacket(packet, Metrics::PacketDropReason::TtlExpired, currentTime);
+        return result;
+    }
+
+    // 2. Check Radio Channel SINR threshold
+    if (sinrDb < minSinrThresholdDb) {
+        result.success = false;
+        result.dropReason = Metrics::PacketDropReason::RadioChannelLoss;
+        DropPacket(packet, Metrics::PacketDropReason::RadioChannelLoss, currentTime);
+        return result;
+    }
+
+    // 3. Calculate latency components
+    double queueDelay = 0.0;
+    if (packet->GetEnqueueTime() > 0.0 && currentTime >= packet->GetEnqueueTime()) {
+        queueDelay = currentTime - packet->GetEnqueueTime();
+    }
+
+    result.latencyBreakdown = CalculateHopLatency(packet->GetSizeBytes(), dataRateBps,
+                                                 distanceMeters, queueDelay, procDelaySeconds);
+
+    double arrivalTime = currentTime + result.latencyBreakdown.txDelaySeconds +
+                         result.latencyBreakdown.propDelaySeconds +
+                         result.latencyBreakdown.procDelaySeconds;
+    result.arrivalTime = arrivalTime;
+
+    // Check if packet expires during transit before arriving
+    if (packet->IsExpired(arrivalTime)) {
+        result.success = false;
+        result.dropReason = Metrics::PacketDropReason::TtlExpired;
+        DropPacket(packet, Metrics::PacketDropReason::TtlExpired, arrivalTime);
+        return result;
+    }
+
+    // Advance packet state
+    packet->AddHop(nextNodeId);
+    packet->SetDepartureTime(currentTime);
+
+    result.success = true;
+    return result;
+}
+
+TransmissionResult PacketEngine::TransmitHop(std::shared_ptr<Packet> packet,
+                                            const std::string& nextNodeId,
+                                            double dataRateBps,
+                                            const Signal::SignalInfo& signalInfo,
+                                            double currentTime,
+                                            double minSinrThresholdDb,
+                                            double procDelaySeconds) {
+    double distanceMeters = signalInfo.GetLatencySeconds() * SPEED_OF_LIGHT_M_S;
+    return TransmitHop(packet, nextNodeId, dataRateBps, distanceMeters,
+                       signalInfo.GetSinrDb(), currentTime, minSinrThresholdDb, procDelaySeconds);
+}
+
+// =========================================================================
+// Phase 5: Metrics Engine Hook & Event-Driven Delivery
+// =========================================================================
+
+void PacketEngine::SetMetricsEngine(std::shared_ptr<Metrics::MetricsEngine> metricsEngine) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_metricsEngineShared = std::move(metricsEngine);
+    m_metricsEngineRaw = m_metricsEngineShared.get();
+}
+
+void PacketEngine::SetMetricsEngine(Metrics::MetricsEngine* metricsEngine) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_metricsEngineShared.reset();
+    m_metricsEngineRaw = metricsEngine;
+}
+
+Metrics::MetricsEngine* PacketEngine::GetMetricsEngine() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_metricsEngineRaw;
+}
+
+void PacketEngine::DeliverPacket(std::shared_ptr<Packet> packet, double deliveryTime) {
+    if (!packet) {
+        return;
+    }
+    packet->SetArrivalTime(deliveryTime);
+    double latency = packet->GetEndToEndLatency();
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_totalDelivered++;
+    if (m_metricsEngineRaw) {
+        m_metricsEngineRaw->RecordPacketReceived(packet->GetId(), latency, deliveryTime);
+    }
+}
+
+void PacketEngine::DropPacket(std::shared_ptr<Packet> packet, Metrics::PacketDropReason reason, double timestamp) {
+    if (!packet) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_totalDropped++;
+    if (m_metricsEngineRaw) {
+        m_metricsEngineRaw->RecordPacketDropped(packet->GetId(), reason, timestamp);
+    }
+}
+
+bool PacketEngine::ScheduleHopTransmission(std::shared_ptr<Packet> packet,
+                                          const std::string& nextNodeId,
+                                          double dataRateBps,
+                                          double distanceMeters,
+                                          double sinrDb,
+                                          double currentTime,
+                                          Core::EventScheduler& scheduler,
+                                          double minSinrThresholdDb,
+                                          double procDelaySeconds) {
+    auto res = TransmitHop(packet, nextNodeId, dataRateBps, distanceMeters,
+                           sinrDb, currentTime, minSinrThresholdDb, procDelaySeconds);
+    if (!res.success) {
+        return false;
+    }
+
+    double arrivalTime = res.arrivalTime;
+    if (nextNodeId == packet->GetDestinationNodeId()) {
+        // Destination node reached (e.g. gateway)
+        scheduler.ScheduleEvent(arrivalTime, 5, Core::EventType::PacketDelivered,
+                                [this, packet, arrivalTime]() {
+                                    DeliverPacket(packet, arrivalTime);
+                                });
+    } else {
+        // Intermediate hop (e.g. inter-satellite link) -> trigger routing at arrival
+        scheduler.ScheduleEvent(arrivalTime, 5, Core::EventType::RoutePacket,
+                                [packet]() {
+                                    (void)packet;
+                                });
+    }
+
+    return true;
+}
+
+uint64_t PacketEngine::GetTotalPacketsSent() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_totalSent;
+}
+
+uint64_t PacketEngine::GetTotalPacketsDelivered() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_totalDelivered;
+}
+
+uint64_t PacketEngine::GetTotalPacketsDropped() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_totalDropped;
 }
 
 } // namespace NtnSim::Packet
