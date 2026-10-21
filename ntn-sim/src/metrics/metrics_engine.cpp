@@ -16,8 +16,7 @@ MetricsEngine::~MetricsEngine() {}
 // ---------------------------------------------------------------------------
 
 void MetricsEngine::RecordMetric(const std::string& name, double value, double timestamp) {
-    // Unique lock for writing (O(1) execution)
-    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
 
     auto& series = m_indexedMetrics[name];
     series.samples.push_back(MetricSample{value, timestamp});
@@ -33,8 +32,7 @@ void MetricsEngine::RecordMetric(const std::string& name, double value, double t
 }
 
 size_t MetricsEngine::GetCount(const std::string& name) const {
-    // Shared lock for concurrent reading (O(1) lookup)
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_indexedMetrics.find(name);
     if (it != m_indexedMetrics.end()) {
         return it->second.samples.size();
@@ -43,7 +41,7 @@ size_t MetricsEngine::GetCount(const std::string& name) const {
 }
 
 double MetricsEngine::GetAverageMetric(const std::string& name) const {
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_indexedMetrics.find(name);
     if (it == m_indexedMetrics.end() || it->second.samples.empty()) {
         return 0.0;
@@ -52,7 +50,7 @@ double MetricsEngine::GetAverageMetric(const std::string& name) const {
 }
 
 double MetricsEngine::GetMin(const std::string& name) const {
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_indexedMetrics.find(name);
     if (it == m_indexedMetrics.end() || it->second.samples.empty()) {
         return 0.0;
@@ -61,7 +59,7 @@ double MetricsEngine::GetMin(const std::string& name) const {
 }
 
 double MetricsEngine::GetMax(const std::string& name) const {
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_indexedMetrics.find(name);
     if (it == m_indexedMetrics.end() || it->second.samples.empty()) {
         return 0.0;
@@ -70,7 +68,7 @@ double MetricsEngine::GetMax(const std::string& name) const {
 }
 
 double MetricsEngine::GetVariance(const std::string& name) const {
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_indexedMetrics.find(name);
     if (it == m_indexedMetrics.end() || it->second.samples.size() < 2) {
         return 0.0;
@@ -91,7 +89,7 @@ double MetricsEngine::GetStandardDeviation(const std::string& name) const {
 }
 
 double MetricsEngine::GetPercentile(const std::string& name, double percentile) const {
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_indexedMetrics.find(name);
     if (it == m_indexedMetrics.end() || it->second.samples.empty()) {
         return 0.0;
@@ -121,7 +119,7 @@ double MetricsEngine::GetPercentile(const std::string& name, double percentile) 
 }
 
 std::vector<Metric> MetricsEngine::GetSamplesInTimeWindow(const std::string& name, double tStart, double tEnd) const {
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<Metric> result;
     auto it = m_indexedMetrics.find(name);
     if (it == m_indexedMetrics.end()) {
@@ -155,7 +153,7 @@ double MetricsEngine::GetAverageMetricInWindow(const std::string& name, double t
 void MetricsEngine::RecordHandover(const std::string& userId, const std::string& fromSatId,
                                   const std::string& toSatId, double timestamp,
                                   bool success, double interruptionTimeSeconds) {
-    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_handoverRecords.push_back(HandoverRecord{
         userId, fromSatId, toSatId, timestamp, success, interruptionTimeSeconds
     });
@@ -178,7 +176,7 @@ void MetricsEngine::RecordHandover(const std::string& userId, const std::string&
 }
 
 HandoverKPIs MetricsEngine::CalculateHandoverKPIs(double pingPongThresholdSeconds) const {
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     HandoverKPIs kpis;
     kpis.totalAttempts = m_handoverRecords.size();
     if (kpis.totalAttempts == 0) {
@@ -231,7 +229,7 @@ HandoverKPIs MetricsEngine::CalculateHandoverKPIs(double pingPongThresholdSecond
 void MetricsEngine::RecordRadioSample(const std::string& userId, const std::string& satId,
                                      double rsrpDbm, double sinrDb, double dopplerShiftHz,
                                      bool inCoverage, double timestamp) {
-    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_radioSamples.push_back(RadioSample{
         userId, satId, rsrpDbm, sinrDb, dopplerShiftHz, inCoverage, timestamp
     });
@@ -251,7 +249,7 @@ void MetricsEngine::RecordRadioSample(const std::string& userId, const std::stri
 }
 
 RadioKPIs MetricsEngine::CalculateRadioKPIs(double sinrOutageThresholdDb) const {
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     RadioKPIs kpis;
     if (m_radioSamples.empty()) {
         return kpis;
@@ -309,12 +307,12 @@ RadioKPIs MetricsEngine::CalculateRadioKPIs(double sinrOutageThresholdDb) const 
 }
 
 void MetricsEngine::RecordPacketSent(uint64_t packetId, size_t sizeBytes, double timestamp) {
-    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_sentPackets.push_back(PacketSentRecord{packetId, sizeBytes, timestamp});
 }
 
 void MetricsEngine::RecordPacketReceived(uint64_t packetId, double latencySeconds, double timestamp) {
-    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_receivedPackets.push_back(PacketReceivedRecord{packetId, latencySeconds, timestamp});
 
     auto& series = m_indexedMetrics["packet_latency"];
@@ -325,7 +323,7 @@ void MetricsEngine::RecordPacketReceived(uint64_t packetId, double latencySecond
 }
 
 void MetricsEngine::RecordPacketDropped(uint64_t packetId, PacketDropReason reason, double timestamp) {
-    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_droppedPackets.push_back(PacketDropRecord{packetId, reason, timestamp});
 
     auto& series = m_indexedMetrics["packet_drop"];
@@ -336,7 +334,7 @@ void MetricsEngine::RecordPacketDropped(uint64_t packetId, PacketDropReason reas
 }
 
 TrafficKPIs MetricsEngine::CalculateTrafficKPIs() const {
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     TrafficKPIs kpis;
     kpis.packetsSent = m_sentPackets.size();
     kpis.packetsReceived = m_receivedPackets.size();
@@ -440,7 +438,7 @@ TrafficKPIs MetricsEngine::CalculateTrafficKPIs() const {
 // ---------------------------------------------------------------------------
 
 std::vector<Metric> MetricsEngine::GetAllRecords() const {
-    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     return m_records;
 }
 
@@ -450,7 +448,7 @@ bool MetricsEngine::ExportToJson(const std::string& filepath) const {
 }
 
 void MetricsEngine::Reset() {
-    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_indexedMetrics.clear();
     m_records.clear();
     m_handoverRecords.clear();

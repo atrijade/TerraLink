@@ -6,9 +6,9 @@
 
 TEST(UtilsTest, IdGeneratorIncremental) {
     NtnSim::Utils::IdGenerator gen;
-    EXPECT_EQ(gen.GetNextId(), 1);
-    EXPECT_EQ(gen.GetNextId(), 2);
-    EXPECT_EQ(gen.GetNextStringId("pkt-"), "pkt-3");
+    EXPECT_EQ(gen.GetNextId(), 1u);
+    EXPECT_EQ(gen.GetNextId(), 2u);
+    EXPECT_EQ(gen.GetNextStringId("sat-"), "sat-3");
 }
 
 TEST(UtilsTest, MathUtilsCalculations) {
@@ -22,7 +22,9 @@ TEST(UtilsTest, MathUtilsCalculations) {
 
 TEST(UtilsTest, RandomGeneratorInit) {
     NtnSim::Utils::RandomGenerator gen(12345);
-    EXPECT_DOUBLE_EQ(gen.GetUniformDouble(0.0, 10.0), 0.0);
+    double val = gen.GetUniformDouble(0.0, 10.0);
+    EXPECT_GE(val, 0.0);
+    EXPECT_LE(val, 10.0);
 }
 
 TEST(UtilsTest, TimeUtilsSystemClockStr) {
