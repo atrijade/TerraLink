@@ -111,3 +111,43 @@ TEST(OrbitEngineTest, OrbitEnginePropagatesAllSatellites) {
     EXPECT_GT(retrieved->GetOrbitState().GetCurrentMeanAnomalyDeg(), 0.0);
 }
 
+TEST(OrbitEngineTest, GenerateWalkerDeltaConstellation) {
+    NtnSim::Orbit::OrbitEngine engine;
+    
+    // 6 planes, 12 satellites per plane = 72 satellites total
+    int count = engine.GenerateWalkerConstellation(6, 12, 600.0, 87.5, 1);
+    EXPECT_EQ(count, 72);
+    EXPECT_EQ(engine.GetAllSatellites().size(), 72);
+
+    // Check specific satellite retrieval
+    auto sat0_0 = engine.GetSatellite("sat-p0-s0");
+    ASSERT_NE(sat0_0, nullptr);
+    EXPECT_DOUBLE_EQ(sat0_0->GetOrbitState().GetRaanDeg(), 0.0);
+    EXPECT_DOUBLE_EQ(sat0_0->GetOrbitState().GetMeanAnomalyEpochDeg(), 0.0);
+    EXPECT_DOUBLE_EQ(sat0_0->GetOrbitState().GetAltitudeKm(), 600.0);
+    EXPECT_DOUBLE_EQ(sat0_0->GetOrbitState().GetInclinationDeg(), 87.5);
+
+    // In-plane spacing: sat-p0-s1 should be 360 / 12 = 30 deg ahead
+    auto sat0_1 = engine.GetSatellite("sat-p0-s1");
+    ASSERT_NE(sat0_1, nullptr);
+    EXPECT_DOUBLE_EQ(sat0_1->GetOrbitState().GetMeanAnomalyEpochDeg(), 30.0);
+
+    // Plane 1 RAAN should be 360 / 6 = 60 deg
+    auto sat1_0 = engine.GetSatellite("sat-p1-s0");
+    ASSERT_NE(sat1_0, nullptr);
+    EXPECT_DOUBLE_EQ(sat1_0->GetOrbitState().GetRaanDeg(), 60.0);
+    // Inter-plane phase offset for F=1 is 360 / 72 = 5 deg
+    EXPECT_DOUBLE_EQ(sat1_0->GetOrbitState().GetMeanAnomalyEpochDeg(), 5.0);
+
+    // Last satellite sat-p5-s11
+    auto sat5_11 = engine.GetSatellite("sat-p5-s11");
+    ASSERT_NE(sat5_11, nullptr);
+    EXPECT_DOUBLE_EQ(sat5_11->GetOrbitState().GetRaanDeg(), 300.0);
+
+    // Test ClearSatellites
+    engine.ClearSatellites();
+    EXPECT_EQ(engine.GetAllSatellites().size(), 0);
+    EXPECT_EQ(engine.GetSatellite("sat-p0-s0"), nullptr);
+}
+
+
