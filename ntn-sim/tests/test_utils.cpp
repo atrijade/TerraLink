@@ -11,11 +11,12 @@ TEST(UtilsTest, IdGeneratorIncremental) {
     EXPECT_EQ(gen.GetNextStringId("pkt-"), "pkt-3");
 }
 
-TEST(UtilsTest, MathUtilsDefaultStubs) {
+TEST(UtilsTest, MathUtilsCalculations) {
     NtnSim::Utils::Position3D p1{0.0, 0.0, 0.0};
     NtnSim::Utils::Position3D p2{10.0, 20.0, 30.0};
     
-    EXPECT_DOUBLE_EQ(NtnSim::Utils::MathUtils::CalculateDistance(p1, p2), 0.0);
+    // sqrt(10^2 + 20^2 + 30^2) = sqrt(1400) ≈ 37.4165738677
+    EXPECT_NEAR(NtnSim::Utils::MathUtils::CalculateDistance(p1, p2), 37.41657, 1e-4);
     EXPECT_DOUBLE_EQ(NtnSim::Utils::MathUtils::CalculateElevationAngle(p1, p2), 90.0);
 }
 
