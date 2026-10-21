@@ -142,3 +142,61 @@ TEST(CoverageEngineTest, GetVisibleSatellites_Walker72) {
     EXPECT_NE(std::find(visible.begin(), visible.end(), "sat-p0-s0"), visible.end());
 }
 
+TEST(CoverageEngineTest, GetBestSatellite_SelectsHighestElevation) {
+    NtnSim::Coverage::CoverageEngine coverageEngine;
+    NtnSim::User::User user("user-0", NtnSim::Utils::GeodeticPosition{0.0, 0.0, 0.0});
+    auto userEcef = NtnSim::Utils::MathUtils::GeodeticToEcef(user.GetPosition());
+
+    // Sat 1: directly overhead (90 deg)
+    NtnSim::Orbit::OrbitState s1;
+    s1.SetEcefPosition(NtnSim::Utils::Position3D{userEcef.x + 600000.0, 0.0, 0.0});
+    auto sat1 = std::make_shared<NtnSim::Orbit::Satellite>("sat-overhead", s1);
+
+    // Sat 2: lower angle (around 30-40 deg)
+    NtnSim::Orbit::OrbitState s2;
+    s2.SetEcefPosition(NtnSim::Utils::Position3D{userEcef.x + 600000.0, 600000.0, 0.0});
+    auto sat2 = std::make_shared<NtnSim::Orbit::Satellite>("sat-lower", s2);
+
+    std::vector<std::shared_ptr<NtnSim::Orbit::Satellite>> sats = {sat2, sat1};
+
+    auto best = coverageEngine.GetBestSatellite(user, sats);
+    ASSERT_NE(best, nullptr);
+    EXPECT_EQ(best->GetId(), "sat-overhead");
+
+    // When no satellite is visible (all below horizon)
+    NtnSim::Orbit::OrbitState sBelow;
+    sBelow.SetEcefPosition(NtnSim::Utils::Position3D{-userEcef.x, 0.0, 0.0}); // other side of Earth
+    auto satBelow = std::make_shared<NtnSim::Orbit::Satellite>("sat-below", sBelow);
+    std::vector<std::shared_ptr<NtnSim::Orbit::Satellite>> hiddenSats = {satBelow};
+
+    EXPECT_EQ(coverageEngine.GetBestSatellite(user, hiddenSats), nullptr);
+}
+
+TEST(CoverageEngineTest, CoverageConfig_CustomMinElevationThreshold) {
+    NtnSim::Coverage::CoverageEngine engine;
+    EXPECT_DOUBLE_EQ(engine.GetConfig().minElevationDeg, 10.0);
+
+    NtnSim::User::User user("user-0", NtnSim::Utils::GeodeticPosition{0.0, 0.0, 0.0});
+    auto userEcef = NtnSim::Utils::MathUtils::GeodeticToEcef(user.GetPosition());
+
+    // Place satellite at an elevation around ~15 degrees
+    NtnSim::Orbit::OrbitState state;
+    state.SetEcefPosition(NtnSim::Utils::Position3D{userEcef.x + 400000.0, 1500000.0, 0.0});
+    NtnSim::Orbit::Satellite sat("sat-mid", state);
+
+    auto info10 = engine.CalculateCoverage(sat, user);
+    double elev = info10.GetElevationAngleDeg();
+    ASSERT_GT(elev, 10.0);
+    ASSERT_LT(elev, 25.0);
+    EXPECT_TRUE(info10.IsVisible()); // Visible with minElevation = 10 deg
+
+    // Raise threshold to 30 deg -> now it should be marked not visible
+    NtnSim::Coverage::CoverageConfig strictConfig{30.0};
+    engine.SetConfig(strictConfig);
+    EXPECT_DOUBLE_EQ(engine.GetConfig().minElevationDeg, 30.0);
+
+    auto info30 = engine.CalculateCoverage(sat, user);
+    EXPECT_FALSE(info30.IsVisible());
+}
+
+
