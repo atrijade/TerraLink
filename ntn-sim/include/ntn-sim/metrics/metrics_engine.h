@@ -5,7 +5,7 @@
 #include <vector>
 #include <unordered_map>
 #include <string>
-#include <shared_mutex>
+#include <mutex>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -32,7 +32,7 @@ struct MetricSeries {
 
 /**
  * @brief Aggregates, analyzes, and calculates statistical metrics and 3GPP NTN KPIs.
- *        Optimized with O(1) indexed storage and shared_mutex for high event throughput.
+ *        Optimized with O(1) indexed storage for high event throughput.
  */
 class MetricsEngine {
 public:
@@ -176,8 +176,8 @@ private:
     std::vector<PacketReceivedRecord> m_receivedPackets;
     std::vector<PacketDropRecord> m_droppedPackets;
 
-    // Read-Write shared mutex for high-concurrency event loops
-    mutable std::shared_mutex m_rwMutex;
+    // Mutex for high-concurrency event loops
+    mutable std::mutex m_mutex;
 };
 
 } // namespace NtnSim::Metrics
