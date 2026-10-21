@@ -142,6 +142,28 @@ void OrbitState::Propagate(double epochSeconds) {
     double y_ecef = -sin_theta * x_eci + cos_theta * y_eci;
     double z_ecef = z_eci;
     m_ecefPosition = Utils::Position3D{x_ecef, y_ecef, z_ecef};
+
+    // Velocity vector in the orbital plane (perifocal frame P-Q), km/s
+    // Using vis-viva angular momentum: h = sqrt(mu * p), p = a*(1-e^2)
+    double p_sl   = m_semiMajorAxisKm * (1.0 - m_eccentricity * m_eccentricity);
+    double h_ang  = std::sqrt(EARTH_MU_KM3_S2 * p_sl);
+    double hp     = h_ang / p_sl;
+    double vx_orb = hp * (-std::sin(nu_rad));
+    double vy_orb = hp * (m_eccentricity + std::cos(nu_rad));
+
+    // Rotate perifocal velocity into ECI using the same rotation matrix (p11..p32)
+    double vx_eci = p11 * vx_orb + p12 * vy_orb;
+    double vy_eci = p21 * vx_orb + p22 * vy_orb;
+    double vz_eci = p31 * vx_orb + p32 * vy_orb;
+
+    // Rotate ECI velocity into ECEF and apply Earth-rotation Coriolis correction
+    // v_ECEF = R_z(theta) * v_ECI + omega_E x r_ECEF
+    double vx_ecef =  cos_theta * vx_eci + sin_theta * vy_eci
+                    + EARTH_ROTATION_RATE_RAD_S * y_ecef;
+    double vy_ecef = -sin_theta * vx_eci + cos_theta * vy_eci
+                    - EARTH_ROTATION_RATE_RAD_S * x_ecef;
+    double vz_ecef = vz_eci;
+    m_ecefVelocity = Utils::Position3D{vx_ecef, vy_ecef, vz_ecef};
 }
 
 Utils::Position3D OrbitState::GetEcefPosition() const {
@@ -170,6 +192,10 @@ double OrbitState::GetVelocityKms() const {
 
 void OrbitState::SetVelocityKms(double vel) {
     m_velocityKms = vel;
+}
+
+Utils::Position3D OrbitState::GetEcefVelocity() const {
+    return m_ecefVelocity;
 }
 
 double OrbitState::GetAltitudeKm() const {

@@ -32,6 +32,12 @@ public:
     double GetVelocityKms() const;
     void SetVelocityKms(double vel);
 
+    /**
+     * @brief Returns the satellite velocity vector in the ECEF frame (km/s).
+     *        Computed automatically during Propagate(). Used for Doppler LoS calculation.
+     */
+    Utils::Position3D GetEcefVelocity() const;
+
     double GetAltitudeKm() const;
     void SetAltitudeKm(double alt);
 
@@ -63,7 +69,7 @@ public:
 private:
     // Earth physical constants
     static constexpr double EARTH_RADIUS_KM = 6378.137;
-    static constexpr double EARTH_MU_KM3_S2 = 398600.4418;       // km^3 / s^2
+    static constexpr double EARTH_MU_KM3_S2 = 398600.4418;           // km^3 / s^2
     static constexpr double EARTH_ROTATION_RATE_RAD_S = 7.292115e-5; // rad/s (WGS-84)
 
     // Orbital parameters
@@ -84,6 +90,7 @@ private:
     Utils::Position3D m_orbitalPlanePosition{0.0, 0.0, 0.0};
     Utils::Position3D m_eciPosition{0.0, 0.0, 0.0};
     Utils::Position3D m_ecefPosition{0.0, 0.0, 0.0};
+    Utils::Position3D m_ecefVelocity{0.0, 0.0, 0.0};  ///< ECEF velocity vector (km/s)
 };
 
 } // namespace NtnSim::Orbit
