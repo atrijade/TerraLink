@@ -5,14 +5,34 @@
 #include <vector>
 #include <unordered_map>
 #include <string>
-#include <mutex>
+#include <shared_mutex>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace NtnSim::Metrics {
 
 /**
+ * @brief Lightweight telemetry sample for high-throughput buffering.
+ */
+struct MetricSample {
+    double value{0.0};
+    double timestamp{0.0};
+};
+
+/**
+ * @brief Metric time-series tracking samples with O(1) running statistics.
+ */
+struct MetricSeries {
+    std::vector<MetricSample> samples;
+    double runningSum{0.0};
+    double runningMin{std::numeric_limits<double>::infinity()};
+    double runningMax{-std::numeric_limits<double>::infinity()};
+};
+
+/**
  * @brief Aggregates, analyzes, and calculates statistical metrics and 3GPP NTN KPIs.
+ *        Optimized with O(1) indexed storage and shared_mutex for high event throughput.
  */
 class MetricsEngine {
 public:
@@ -20,31 +40,31 @@ public:
     ~MetricsEngine();
 
     // -----------------------------------------------------------------------
-    // Generic Telemetry Recording (Phase 1)
+    // High-Throughput Generic Telemetry (Phase 1 & Phase 4)
     // -----------------------------------------------------------------------
 
     /**
-     * @brief Logs a metric value sample into telemetry buffers.
+     * @brief Logs a metric sample into indexed telemetry buffers. O(1) execution.
      */
     void RecordMetric(const std::string& name, double value, double timestamp);
 
     /**
-     * @brief Returns total number of logged samples for a given metric.
+     * @brief Returns total number of logged samples for a given metric. O(1) lookup.
      */
     size_t GetCount(const std::string& name) const;
 
     /**
-     * @brief Computes arithmetic mean of logged samples for a metric name.
+     * @brief Computes arithmetic mean of logged samples. O(1) lookup.
      */
     double GetAverageMetric(const std::string& name) const;
 
     /**
-     * @brief Computes minimum sample value recorded for a metric name.
+     * @brief Computes minimum sample value recorded. O(1) lookup.
      */
     double GetMin(const std::string& name) const;
 
     /**
-     * @brief Computes maximum sample value recorded for a metric name.
+     * @brief Computes maximum sample value recorded. O(1) lookup.
      */
     double GetMax(const std::string& name) const;
 
@@ -143,6 +163,10 @@ public:
     void Reset();
 
 private:
+    // O(1) indexed time-series storage with running statistics (Phase 4)
+    std::unordered_map<std::string, MetricSeries> m_indexedMetrics;
+
+    // Sequential log preserved for global replay
     std::vector<Metric> m_records;
 
     // Phase 2 dedicated KPI storage
@@ -152,7 +176,8 @@ private:
     std::vector<PacketReceivedRecord> m_receivedPackets;
     std::vector<PacketDropRecord> m_droppedPackets;
 
-    mutable std::mutex m_mutex;
+    // Read-Write shared mutex for high-concurrency event loops
+    mutable std::shared_mutex m_rwMutex;
 };
 
 } // namespace NtnSim::Metrics

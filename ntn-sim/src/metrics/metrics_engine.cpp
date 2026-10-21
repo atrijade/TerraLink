@@ -3,6 +3,7 @@
 #include <numeric>
 #include <cmath>
 #include <limits>
+#include <mutex>
 
 namespace NtnSim::Metrics {
 
@@ -11,90 +12,78 @@ MetricsEngine::MetricsEngine() {}
 MetricsEngine::~MetricsEngine() {}
 
 // ---------------------------------------------------------------------------
-// Phase 1: Generic Telemetry & Statistical Aggregations
+// High-Throughput Generic Telemetry (Phase 1 & Phase 4)
 // ---------------------------------------------------------------------------
 
 void MetricsEngine::RecordMetric(const std::string& name, double value, double timestamp) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    // Unique lock for writing (O(1) execution)
+    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
+
+    auto& series = m_indexedMetrics[name];
+    series.samples.push_back(MetricSample{value, timestamp});
+    series.runningSum += value;
+    if (value < series.runningMin) {
+        series.runningMin = value;
+    }
+    if (value > series.runningMax) {
+        series.runningMax = value;
+    }
+
     m_records.emplace_back(name, value, timestamp);
 }
 
 size_t MetricsEngine::GetCount(const std::string& name) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    size_t count = 0;
-    for (const auto& record : m_records) {
-        if (record.GetName() == name) {
-            count++;
-        }
+    // Shared lock for concurrent reading (O(1) lookup)
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    auto it = m_indexedMetrics.find(name);
+    if (it != m_indexedMetrics.end()) {
+        return it->second.samples.size();
     }
-    return count;
+    return 0;
 }
 
 double MetricsEngine::GetAverageMetric(const std::string& name) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    double sum = 0.0;
-    size_t count = 0;
-    for (const auto& record : m_records) {
-        if (record.GetName() == name) {
-            sum += record.GetValue();
-            count++;
-        }
-    }
-    if (count == 0) {
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    auto it = m_indexedMetrics.find(name);
+    if (it == m_indexedMetrics.end() || it->second.samples.empty()) {
         return 0.0;
     }
-    return sum / static_cast<double>(count);
+    return it->second.runningSum / static_cast<double>(it->second.samples.size());
 }
 
 double MetricsEngine::GetMin(const std::string& name) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    double minVal = std::numeric_limits<double>::infinity();
-    bool found = false;
-    for (const auto& record : m_records) {
-        if (record.GetName() == name) {
-            if (record.GetValue() < minVal) {
-                minVal = record.GetValue();
-            }
-            found = true;
-        }
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    auto it = m_indexedMetrics.find(name);
+    if (it == m_indexedMetrics.end() || it->second.samples.empty()) {
+        return 0.0;
     }
-    return found ? minVal : 0.0;
+    return it->second.runningMin;
 }
 
 double MetricsEngine::GetMax(const std::string& name) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    double maxVal = -std::numeric_limits<double>::infinity();
-    bool found = false;
-    for (const auto& record : m_records) {
-        if (record.GetName() == name) {
-            if (record.GetValue() > maxVal) {
-                maxVal = record.GetValue();
-            }
-            found = true;
-        }
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    auto it = m_indexedMetrics.find(name);
+    if (it == m_indexedMetrics.end() || it->second.samples.empty()) {
+        return 0.0;
     }
-    return found ? maxVal : 0.0;
+    return it->second.runningMax;
 }
 
 double MetricsEngine::GetVariance(const std::string& name) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::vector<double> values;
-    for (const auto& record : m_records) {
-        if (record.GetName() == name) {
-            values.push_back(record.GetValue());
-        }
-    }
-    if (values.size() < 2) {
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    auto it = m_indexedMetrics.find(name);
+    if (it == m_indexedMetrics.end() || it->second.samples.size() < 2) {
         return 0.0;
     }
 
-    double mean = std::accumulate(values.begin(), values.end(), 0.0) / static_cast<double>(values.size());
+    const auto& samples = it->second.samples;
+    double mean = it->second.runningSum / static_cast<double>(samples.size());
     double sumSqDiff = 0.0;
-    for (double v : values) {
-        double diff = v - mean;
+    for (const auto& s : samples) {
+        double diff = s.value - mean;
         sumSqDiff += diff * diff;
     }
-    return sumSqDiff / static_cast<double>(values.size() - 1); // Sample variance
+    return sumSqDiff / static_cast<double>(samples.size() - 1); // Sample variance
 }
 
 double MetricsEngine::GetStandardDeviation(const std::string& name) const {
@@ -102,18 +91,21 @@ double MetricsEngine::GetStandardDeviation(const std::string& name) const {
 }
 
 double MetricsEngine::GetPercentile(const std::string& name, double percentile) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::vector<double> values;
-    for (const auto& record : m_records) {
-        if (record.GetName() == name) {
-            values.push_back(record.GetValue());
-        }
-    }
-    if (values.empty()) {
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
+    auto it = m_indexedMetrics.find(name);
+    if (it == m_indexedMetrics.end() || it->second.samples.empty()) {
         return 0.0;
     }
-    if (values.size() == 1) {
-        return values.front();
+
+    const auto& samples = it->second.samples;
+    if (samples.size() == 1) {
+        return samples.front().value;
+    }
+
+    std::vector<double> values;
+    values.reserve(samples.size());
+    for (const auto& s : samples) {
+        values.push_back(s.value);
     }
 
     std::sort(values.begin(), values.end());
@@ -129,13 +121,16 @@ double MetricsEngine::GetPercentile(const std::string& name, double percentile) 
 }
 
 std::vector<Metric> MetricsEngine::GetSamplesInTimeWindow(const std::string& name, double tStart, double tEnd) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
     std::vector<Metric> result;
-    for (const auto& record : m_records) {
-        if (record.GetName() == name &&
-            record.GetTimestamp() >= tStart &&
-            record.GetTimestamp() <= tEnd) {
-            result.push_back(record);
+    auto it = m_indexedMetrics.find(name);
+    if (it == m_indexedMetrics.end()) {
+        return result;
+    }
+
+    for (const auto& s : it->second.samples) {
+        if (s.timestamp >= tStart && s.timestamp <= tEnd) {
+            result.emplace_back(name, s.value, s.timestamp);
         }
     }
     return result;
@@ -154,26 +149,36 @@ double MetricsEngine::GetAverageMetricInWindow(const std::string& name, double t
 }
 
 // ---------------------------------------------------------------------------
-// Phase 2: Domain-Specific NTN KPI Aggregators
+// Domain-Specific 3GPP NTN KPI Aggregators (Phase 2)
 // ---------------------------------------------------------------------------
 
 void MetricsEngine::RecordHandover(const std::string& userId, const std::string& fromSatId,
                                   const std::string& toSatId, double timestamp,
                                   bool success, double interruptionTimeSeconds) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
     m_handoverRecords.push_back(HandoverRecord{
         userId, fromSatId, toSatId, timestamp, success, interruptionTimeSeconds
     });
 
-    // Mirror to generic metrics buffer for time-series access
-    m_records.emplace_back("handover_event", success ? 1.0 : 0.0, timestamp);
+    // Mirror to indexed running metrics
+    auto& seriesEvt = m_indexedMetrics["handover_event"];
+    double evtVal = success ? 1.0 : 0.0;
+    seriesEvt.samples.push_back(MetricSample{evtVal, timestamp});
+    seriesEvt.runningSum += evtVal;
+    if (evtVal < seriesEvt.runningMin) seriesEvt.runningMin = evtVal;
+    if (evtVal > seriesEvt.runningMax) seriesEvt.runningMax = evtVal;
+
     if (success && interruptionTimeSeconds > 0.0) {
-        m_records.emplace_back("handover_interruption_time", interruptionTimeSeconds, timestamp);
+        auto& seriesInt = m_indexedMetrics["handover_interruption_time"];
+        seriesInt.samples.push_back(MetricSample{interruptionTimeSeconds, timestamp});
+        seriesInt.runningSum += interruptionTimeSeconds;
+        if (interruptionTimeSeconds < seriesInt.runningMin) seriesInt.runningMin = interruptionTimeSeconds;
+        if (interruptionTimeSeconds > seriesInt.runningMax) seriesInt.runningMax = interruptionTimeSeconds;
     }
 }
 
 HandoverKPIs MetricsEngine::CalculateHandoverKPIs(double pingPongThresholdSeconds) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
     HandoverKPIs kpis;
     kpis.totalAttempts = m_handoverRecords.size();
     if (kpis.totalAttempts == 0) {
@@ -183,7 +188,6 @@ HandoverKPIs MetricsEngine::CalculateHandoverKPIs(double pingPongThresholdSecond
     double totalInterruption = 0.0;
     double maxInterruption = 0.0;
 
-    // Track user-specific handover chains for ping-pong detection
     std::unordered_map<std::string, std::vector<const HandoverRecord*>> userHandovers;
 
     for (const auto& rec : m_handoverRecords) {
@@ -211,7 +215,6 @@ HandoverKPIs MetricsEngine::CalculateHandoverKPIs(double pingPongThresholdSecond
             const auto& curr = *records[i];
             double dt = curr.timestamp - prev.timestamp;
             if (dt >= 0.0 && dt <= pingPongThresholdSeconds) {
-                // Returned to original satellite
                 if (curr.fromSatId == prev.toSatId && curr.toSatId == prev.fromSatId) {
                     pingPongs++;
                 }
@@ -228,19 +231,27 @@ HandoverKPIs MetricsEngine::CalculateHandoverKPIs(double pingPongThresholdSecond
 void MetricsEngine::RecordRadioSample(const std::string& userId, const std::string& satId,
                                      double rsrpDbm, double sinrDb, double dopplerShiftHz,
                                      bool inCoverage, double timestamp) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
     m_radioSamples.push_back(RadioSample{
         userId, satId, rsrpDbm, sinrDb, dopplerShiftHz, inCoverage, timestamp
     });
 
-    // Mirror to generic metric samples
-    m_records.emplace_back("rsrp", rsrpDbm, timestamp);
-    m_records.emplace_back("sinr", sinrDb, timestamp);
-    m_records.emplace_back("doppler", dopplerShiftHz, timestamp);
+    // Mirror to indexed running metrics for fast queries
+    auto recordOne = [&](const std::string& name, double val) {
+        auto& series = m_indexedMetrics[name];
+        series.samples.push_back(MetricSample{val, timestamp});
+        series.runningSum += val;
+        if (val < series.runningMin) series.runningMin = val;
+        if (val > series.runningMax) series.runningMax = val;
+    };
+
+    recordOne("rsrp", rsrpDbm);
+    recordOne("sinr", sinrDb);
+    recordOne("doppler", dopplerShiftHz);
 }
 
 RadioKPIs MetricsEngine::CalculateRadioKPIs(double sinrOutageThresholdDb) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
     RadioKPIs kpis;
     if (m_radioSamples.empty()) {
         return kpis;
@@ -283,7 +294,7 @@ RadioKPIs MetricsEngine::CalculateRadioKPIs(double sinrOutageThresholdDb) const 
     kpis.serviceAvailabilityPercent = (static_cast<double>(inCoverageCount) / static_cast<double>(total)) * 100.0;
     kpis.outageProbabilityPercent = (static_cast<double>(outageCount) / static_cast<double>(total)) * 100.0;
 
-    // Calculate 10th percentile RSRP (cell-edge coverage)
+    // Calculate 10th percentile RSRP (cell-edge performance)
     std::sort(rsrpValues.begin(), rsrpValues.end());
     double k = 0.10 * static_cast<double>(rsrpValues.size() - 1);
     size_t idx = static_cast<size_t>(std::floor(k));
@@ -298,24 +309,34 @@ RadioKPIs MetricsEngine::CalculateRadioKPIs(double sinrOutageThresholdDb) const 
 }
 
 void MetricsEngine::RecordPacketSent(uint64_t packetId, size_t sizeBytes, double timestamp) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
     m_sentPackets.push_back(PacketSentRecord{packetId, sizeBytes, timestamp});
 }
 
 void MetricsEngine::RecordPacketReceived(uint64_t packetId, double latencySeconds, double timestamp) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
     m_receivedPackets.push_back(PacketReceivedRecord{packetId, latencySeconds, timestamp});
-    m_records.emplace_back("packet_latency", latencySeconds, timestamp);
+
+    auto& series = m_indexedMetrics["packet_latency"];
+    series.samples.push_back(MetricSample{latencySeconds, timestamp});
+    series.runningSum += latencySeconds;
+    if (latencySeconds < series.runningMin) series.runningMin = latencySeconds;
+    if (latencySeconds > series.runningMax) series.runningMax = latencySeconds;
 }
 
 void MetricsEngine::RecordPacketDropped(uint64_t packetId, PacketDropReason reason, double timestamp) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
     m_droppedPackets.push_back(PacketDropRecord{packetId, reason, timestamp});
-    m_records.emplace_back("packet_drop", 1.0, timestamp);
+
+    auto& series = m_indexedMetrics["packet_drop"];
+    series.samples.push_back(MetricSample{1.0, timestamp});
+    series.runningSum += 1.0;
+    series.runningMin = 1.0;
+    series.runningMax = 1.0;
 }
 
 TrafficKPIs MetricsEngine::CalculateTrafficKPIs() const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
     TrafficKPIs kpis;
     kpis.packetsSent = m_sentPackets.size();
     kpis.packetsReceived = m_receivedPackets.size();
@@ -385,7 +406,6 @@ TrafficKPIs MetricsEngine::CalculateTrafficKPIs() const {
     }
 
     // Throughput in Mbps
-    // Match received packet IDs with sent packet sizes to compute total bytes received
     std::unordered_map<uint64_t, size_t> packetSizes;
     for (const auto& sent : m_sentPackets) {
         packetSizes[sent.packetId] = sent.sizeBytes;
@@ -400,7 +420,7 @@ TrafficKPIs MetricsEngine::CalculateTrafficKPIs() const {
         if (it != packetSizes.end()) {
             totalBytesReceived += it->second;
         } else {
-            totalBytesReceived += 1500; // Default Ethernet MTU if untracked
+            totalBytesReceived += 1500;
         }
         if (rx.timestamp < minTime) minTime = rx.timestamp;
         if (rx.timestamp > maxTime) maxTime = rx.timestamp;
@@ -420,18 +440,18 @@ TrafficKPIs MetricsEngine::CalculateTrafficKPIs() const {
 // ---------------------------------------------------------------------------
 
 std::vector<Metric> MetricsEngine::GetAllRecords() const {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::shared_lock<std::shared_mutex> lock(m_rwMutex);
     return m_records;
 }
 
 bool MetricsEngine::ExportToJson(const std::string& filepath) const {
     (void)filepath;
-    // Skeleton implementation (Phase 3)
     return true;
 }
 
 void MetricsEngine::Reset() {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::shared_mutex> lock(m_rwMutex);
+    m_indexedMetrics.clear();
     m_records.clear();
     m_handoverRecords.clear();
     m_radioSamples.clear();

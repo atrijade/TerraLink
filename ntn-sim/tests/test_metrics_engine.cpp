@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "ntn-sim/metrics/metrics_engine.h"
 #include <cmath>
+#include <thread>
+#include <vector>
 
 TEST(MetricsEngineTest, LogAndAggregateKPIs) {
     NtnSim::Metrics::MetricsEngine engine;
@@ -147,3 +149,46 @@ TEST(MetricsEngineTest, TrafficKPIsAndPDR) {
     // Throughput > 0
     EXPECT_GT(kpis.throughputMbps, 0.0);
 }
+
+TEST(MetricsEngineTest, HighThroughputMultithreadedBuffering) {
+    NtnSim::Metrics::MetricsEngine engine;
+
+    constexpr int NUM_THREADS = 8;
+    constexpr int SAMPLES_PER_THREAD = 1000;
+
+    std::vector<std::thread> threads;
+    threads.reserve(NUM_THREADS);
+
+    for (int t = 0; t < NUM_THREADS; ++t) {
+        threads.emplace_back([&engine, t]() {
+            for (int i = 0; i < SAMPLES_PER_THREAD; ++i) {
+                double val = static_cast<double>(t * 100 + i);
+                double time = 0.001 * static_cast<double>(i);
+                engine.RecordMetric("throughput_sample", val, time);
+                
+                uint64_t pktId = static_cast<uint64_t>(t * 100000 + i);
+                engine.RecordPacketSent(pktId, 1024, time);
+                engine.RecordPacketReceived(pktId, 0.010 + 0.0001 * t, time + 0.010);
+
+                if (i % 100 == 0) {
+                    // Concurrent read lock query while writer threads are active
+                    EXPECT_GE(engine.GetCount("throughput_sample"), 1u);
+                    EXPECT_GE(engine.GetAverageMetric("throughput_sample"), 0.0);
+                }
+            }
+        });
+    }
+
+    for (auto& th : threads) {
+        th.join();
+    }
+
+    // Verify all 8,000 samples were recorded without loss or data race
+    EXPECT_EQ(engine.GetCount("throughput_sample"), static_cast<size_t>(NUM_THREADS * SAMPLES_PER_THREAD));
+
+    auto traffic = engine.CalculateTrafficKPIs();
+    EXPECT_EQ(traffic.packetsSent, static_cast<size_t>(NUM_THREADS * SAMPLES_PER_THREAD));
+    EXPECT_EQ(traffic.packetsReceived, static_cast<size_t>(NUM_THREADS * SAMPLES_PER_THREAD));
+    EXPECT_DOUBLE_EQ(traffic.packetDeliveryRatioPercent, 100.0);
+}
+
