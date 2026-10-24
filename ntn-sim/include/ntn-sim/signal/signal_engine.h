@@ -43,7 +43,7 @@ public:
      * @param frequencyGhz Carrier frequency in GHz (e.g. 2.1 for S-Band, 20.0 for Ka-Band).
      * @return SignalInfo populated with FSPL, RSRP, SINR, latency, and Doppler shift.
      */
-    SignalInfo CalculateSignal(const Coverage::CoverageInfo& coverage, double frequencyGhz);
+    SignalInfo CalculateSignal(const Coverage::CoverageInfo& coverage, double frequencyGhz) const;
 
     /**
      * @brief Creates or updates a dynamic channel connection between two endpoints.
