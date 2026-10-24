@@ -56,7 +56,7 @@ double SignalEngine::ComputeDopplerShiftHz(double losVelocityKms, double frequen
 // Public interface
 // ---------------------------------------------------------------------------
 
-SignalInfo SignalEngine::CalculateSignal(const Coverage::CoverageInfo& coverage, double frequencyGhz) {
+SignalInfo SignalEngine::CalculateSignal(const Coverage::CoverageInfo& coverage, double frequencyGhz) const {
     SignalInfo info;
 
     // Out-of-coverage: satellite below horizon or not visible

@@ -33,18 +33,18 @@ public:
     /**
      * @brief Computes coverage metrics between one satellite and one user.
      */
-    CoverageInfo CalculateCoverage(const Orbit::Satellite& sat, const User::User& user);
+    CoverageInfo CalculateCoverage(const Orbit::Satellite& sat, const User::User& user) const;
 
     /**
      * @brief Identifies all satellites that are visible to the user terminal.
      */
-    std::vector<std::string> GetVisibleSatellites(const User::User& user, const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites);
+    std::vector<std::string> GetVisibleSatellites(const User::User& user, const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const;
 
     /**
      * @brief Finds and returns the visible satellite with the highest elevation angle for this user.
      * @return Shared pointer to best Satellite, or nullptr if no satellite is visible.
      */
-    std::shared_ptr<Orbit::Satellite> GetBestSatellite(const User::User& user, const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites);
+    std::shared_ptr<Orbit::Satellite> GetBestSatellite(const User::User& user, const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const;
 
     CoverageConfig GetConfig() const;
     void SetConfig(const CoverageConfig& config);

@@ -198,6 +198,10 @@ Utils::Position3D OrbitState::GetEcefVelocity() const {
     return m_ecefVelocity;
 }
 
+void OrbitState::SetEcefVelocity(const Utils::Position3D& vel) {
+    m_ecefVelocity = vel;
+}
+
 double OrbitState::GetAltitudeKm() const {
     return m_altitudeKm;
 }

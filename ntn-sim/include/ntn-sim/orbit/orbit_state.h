@@ -37,6 +37,7 @@ public:
      *        Computed automatically during Propagate(). Used for Doppler LoS calculation.
      */
     Utils::Position3D GetEcefVelocity() const;
+    void SetEcefVelocity(const Utils::Position3D& vel);
 
     double GetAltitudeKm() const;
     void SetAltitudeKm(double alt);

@@ -2,18 +2,17 @@
 #include "ntn-sim/orbit/satellite.h"
 #include "ntn-sim/user/user.h"
 #include "ntn-sim/utils/math_utils.h"
-#include <cmath>
-#include <algorithm>
 
 namespace NtnSim::Coverage {
 
 CoverageEngine::CoverageEngine() {}
 
-CoverageEngine::CoverageEngine(const CoverageConfig& config) : m_config(config) {}
+CoverageEngine::CoverageEngine(const CoverageConfig& config)
+    : m_config(config) {}
 
 CoverageEngine::~CoverageEngine() {}
 
-CoverageInfo CoverageEngine::CalculateCoverage(const Orbit::Satellite& sat, const User::User& user) {
+CoverageInfo CoverageEngine::CalculateCoverage(const Orbit::Satellite& sat, const User::User& user) const {
     CoverageInfo info;
 
     // Step 1: Convert user geodetic (lat, lon, alt) -> ECEF (X, Y, Z) in metres
@@ -61,7 +60,7 @@ CoverageInfo CoverageEngine::CalculateCoverage(const Orbit::Satellite& sat, cons
 
 std::vector<std::string> CoverageEngine::GetVisibleSatellites(
     const User::User& user,
-    const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites)
+    const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const
 {
     std::vector<std::string> visibleIds;
     for (const auto& sat : satellites) {
@@ -76,7 +75,7 @@ std::vector<std::string> CoverageEngine::GetVisibleSatellites(
 
 std::shared_ptr<Orbit::Satellite> CoverageEngine::GetBestSatellite(
     const User::User& user,
-    const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites)
+    const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const
 {
     std::shared_ptr<Orbit::Satellite> bestSat = nullptr;
     double maxElevation = -90.0;
