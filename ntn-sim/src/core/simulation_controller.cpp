@@ -41,9 +41,10 @@ void SimulationController::InitializeEngines() {
     m_metricsEngine = std::make_unique<Metrics::MetricsEngine>();
     m_restApi = std::make_unique<Api::RestApi>();
 
-    // Wire telemetry engines into MetricsEngine
+    // Wire telemetry and routing engines into PacketEngine
     m_packetEngine->SetMetricsEngine(m_metricsEngine.get());
     m_handoverEngine->SetMetricsEngine(m_metricsEngine.get());
+    m_packetEngine->SetRoutingEngine(m_routingEngine.get());
 }
 
 void SimulationController::StartSimulation() {

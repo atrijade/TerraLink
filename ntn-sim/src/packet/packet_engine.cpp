@@ -1,5 +1,6 @@
 #include "ntn-sim/packet/packet_engine.h"
 #include "ntn-sim/metrics/metrics_engine.h"
+#include "ntn-sim/routing/routing_engine.h"
 #include "ntn-sim/core/event_scheduler.h"
 #include "ntn-sim/core/event.h"
 #include <cmath>
@@ -15,6 +16,17 @@ PacketEngine::PacketEngine(std::shared_ptr<Metrics::MetricsEngine> metricsEngine
 
 PacketEngine::PacketEngine(Metrics::MetricsEngine* metricsEngine)
     : m_metricsEngineRaw(metricsEngine) {}
+
+PacketEngine::PacketEngine(Metrics::MetricsEngine* metricsEngine, Routing::RoutingEngine* routingEngine)
+    : m_metricsEngineRaw(metricsEngine),
+      m_routingEngineRaw(routingEngine) {}
+
+PacketEngine::PacketEngine(std::shared_ptr<Metrics::MetricsEngine> metricsEngine,
+                           std::shared_ptr<Routing::RoutingEngine> routingEngine)
+    : m_metricsEngineRaw(metricsEngine.get()),
+      m_metricsEngineShared(std::move(metricsEngine)),
+      m_routingEngineRaw(routingEngine.get()),
+      m_routingEngineShared(std::move(routingEngine)) {}
 
 PacketEngine::~PacketEngine() {}
 
@@ -51,9 +63,8 @@ std::shared_ptr<Packet> PacketEngine::GeneratePacket(uint64_t packetId, uint32_t
 
 void PacketEngine::ConfigureQueue(const std::string& queueId, size_t maxPackets, size_t maxSizeBytes) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    auto& q = m_queues[queueId];
-    q.config.maxPackets = maxPackets;
-    q.config.maxSizeBytes = maxSizeBytes;
+    m_queues[queueId].config.maxPackets = maxPackets;
+    m_queues[queueId].config.maxSizeBytes = maxSizeBytes;
 }
 
 void PacketEngine::ConfigureQueue(const std::string& queueId, const QueueConfig& config) {
@@ -76,25 +87,31 @@ bool PacketEngine::EnqueuePacket(const std::string& queueId, std::shared_ptr<Pac
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
-    auto& q = m_queues[queueId];
+    auto& qState = m_queues[queueId];
 
-    // Check DropTail limits (packet count and byte limits)
-    bool packetLimitExceeded = (q.packets.size() >= q.config.maxPackets);
-    bool byteLimitExceeded = (q.config.maxSizeBytes > 0 &&
-                             (q.currentSizeBytes + packet->GetSizeBytes() > q.config.maxSizeBytes));
-
-    if (packetLimitExceeded || byteLimitExceeded) {
-        q.droppedPacketsCount++;
+    // Check packet count limit (DropTail policy)
+    if (qState.packets.size() >= qState.config.maxPackets) {
+        qState.droppedPacketsCount++;
         m_totalDropped++;
         if (m_metricsEngineRaw) {
             m_metricsEngineRaw->RecordPacketDropped(packet->GetId(), Metrics::PacketDropReason::QueueOverflow, enqueueTime);
         }
-        return false; // Dropped due to buffer overflow
+        return false;
+    }
+
+    // Check byte size limit (DropTail policy)
+    if (qState.currentSizeBytes + packet->GetSizeBytes() > qState.config.maxSizeBytes) {
+        qState.droppedPacketsCount++;
+        m_totalDropped++;
+        if (m_metricsEngineRaw) {
+            m_metricsEngineRaw->RecordPacketDropped(packet->GetId(), Metrics::PacketDropReason::QueueOverflow, enqueueTime);
+        }
+        return false;
     }
 
     packet->SetEnqueueTime(enqueueTime);
-    q.packets.push(packet);
-    q.currentSizeBytes += packet->GetSizeBytes();
+    qState.packets.push(packet);
+    qState.currentSizeBytes += packet->GetSizeBytes();
     return true;
 }
 
@@ -105,20 +122,24 @@ std::shared_ptr<Packet> PacketEngine::DequeuePacket(const std::string& queueId, 
         return nullptr;
     }
 
-    auto packet = it->second.packets.front();
-    it->second.packets.pop();
+    auto& qState = it->second;
+    auto frontPkt = qState.packets.front();
+    qState.packets.pop();
 
-    if (it->second.currentSizeBytes >= packet->GetSizeBytes()) {
-        it->second.currentSizeBytes -= packet->GetSizeBytes();
+    if (frontPkt->GetSizeBytes() <= qState.currentSizeBytes) {
+        qState.currentSizeBytes -= frontPkt->GetSizeBytes();
     } else {
-        it->second.currentSizeBytes = 0;
+        qState.currentSizeBytes = 0;
     }
 
-    packet->SetDepartureTime(dequeueTime);
-    double delay = dequeueTime - packet->GetEnqueueTime();
-    it->second.lastQueueDelaySeconds = (delay >= 0.0) ? delay : 0.0;
+    frontPkt->SetDepartureTime(dequeueTime);
+    double queueDelay = 0.0;
+    if (dequeueTime >= frontPkt->GetEnqueueTime()) {
+        queueDelay = dequeueTime - frontPkt->GetEnqueueTime();
+    }
+    qState.lastQueueDelaySeconds = queueDelay;
 
-    return packet;
+    return frontPkt;
 }
 
 size_t PacketEngine::GetQueueSize(const std::string& queueId) const {
@@ -161,9 +182,8 @@ void PacketEngine::ClearQueue(const std::string& queueId) {
     std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_queues.find(queueId);
     if (it != m_queues.end()) {
-        while (!it->second.packets.empty()) {
-            it->second.packets.pop();
-        }
+        std::queue<std::shared_ptr<Packet>> emptyQueue;
+        std::swap(it->second.packets, emptyQueue);
         it->second.currentSizeBytes = 0;
     }
 }
@@ -174,9 +194,9 @@ void PacketEngine::ClearQueue(const std::string& queueId) {
 
 void PacketEngine::AddTrafficFlow(const TrafficFlowConfig& config) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    // Overwrite existing flow with same ID or add new
-    auto it = std::find_if(m_trafficFlows.begin(), m_trafficFlows.end(),
-                           [&config](const TrafficFlowConfig& f) { return f.flowId == config.flowId; });
+    auto it = std::find_if(m_trafficFlows.begin(), m_trafficFlows.end(), [&config](const auto& f) {
+        return f.flowId == config.flowId;
+    });
     if (it != m_trafficFlows.end()) {
         *it = config;
     } else {
@@ -186,10 +206,11 @@ void PacketEngine::AddTrafficFlow(const TrafficFlowConfig& config) {
 
 bool PacketEngine::RemoveTrafficFlow(const std::string& flowId) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    auto it = std::remove_if(m_trafficFlows.begin(), m_trafficFlows.end(),
-                             [&flowId](const TrafficFlowConfig& f) { return f.flowId == flowId; });
+    auto it = std::find_if(m_trafficFlows.begin(), m_trafficFlows.end(), [&flowId](const auto& f) {
+        return f.flowId == flowId;
+    });
     if (it != m_trafficFlows.end()) {
-        m_trafficFlows.erase(it, m_trafficFlows.end());
+        m_trafficFlows.erase(it);
         return true;
     }
     return false;
@@ -197,10 +218,11 @@ bool PacketEngine::RemoveTrafficFlow(const std::string& flowId) {
 
 std::optional<TrafficFlowConfig> PacketEngine::GetTrafficFlow(const std::string& flowId) const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    for (const auto& f : m_trafficFlows) {
-        if (f.flowId == flowId) {
-            return f;
-        }
+    auto it = std::find_if(m_trafficFlows.begin(), m_trafficFlows.end(), [&flowId](const auto& f) {
+        return f.flowId == flowId;
+    });
+    if (it != m_trafficFlows.end()) {
+        return *it;
     }
     return std::nullopt;
 }
@@ -219,10 +241,7 @@ double PacketEngine::GetNextPoissonInterval(double packetRate) {
     if (packetRate <= 0.0) {
         return 1.0;
     }
-    std::lock_guard<std::mutex> lock(m_mutex);
-    // Exponential inter-arrival distribution with parameter lambda = packetRate:
-    // interval = -ln(U) / lambda, where U ~ Uniform(1e-7, 1.0)
-    double u = m_rng.GetUniformDouble(0.0000001, 1.0);
+    double u = m_rng.GetUniformDouble(1e-9, 1.0);
     return -std::log(u) / packetRate;
 }
 
@@ -388,7 +407,7 @@ TransmissionResult PacketEngine::TransmitHop(std::shared_ptr<Packet> packet,
 }
 
 // =========================================================================
-// Phase 5: Metrics Engine Hook & Event-Driven Delivery
+// Telemetry & Metrics Hook
 // =========================================================================
 
 void PacketEngine::SetMetricsEngine(std::shared_ptr<Metrics::MetricsEngine> metricsEngine) {
@@ -433,6 +452,139 @@ void PacketEngine::DropPacket(std::shared_ptr<Packet> packet, Metrics::PacketDro
     }
 }
 
+// =========================================================================
+// Multi-Hop Routing Engine Integration & Discrete-Event Forwarding
+// =========================================================================
+
+void PacketEngine::SetRoutingEngine(std::shared_ptr<Routing::RoutingEngine> routingEngine) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_routingEngineShared = std::move(routingEngine);
+    m_routingEngineRaw = m_routingEngineShared.get();
+}
+
+void PacketEngine::SetRoutingEngine(Routing::RoutingEngine* routingEngine) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_routingEngineShared.reset();
+    m_routingEngineRaw = routingEngine;
+}
+
+Routing::RoutingEngine* PacketEngine::GetRoutingEngine() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_routingEngineRaw;
+}
+
+bool PacketEngine::RoutePacketMultiHop(std::shared_ptr<Packet> packet,
+                                       const std::string& currentNodeId,
+                                       double currentTime,
+                                       Core::EventScheduler& scheduler,
+                                       double defaultDataRateBps,
+                                       double sinrDb,
+                                       double minSinrThresholdDb,
+                                       double procDelaySeconds) {
+    if (!packet) {
+        return false;
+    }
+
+    if (packet->IsExpired(currentTime) || packet->GetTtl() == 0) {
+        DropPacket(packet, Metrics::PacketDropReason::TtlExpired, currentTime);
+        return false;
+    }
+
+    const std::string& destId = packet->GetDestinationNodeId();
+    if (currentNodeId == destId) {
+        DeliverPacket(packet, currentTime);
+        return true;
+    }
+
+    Routing::RoutingEngine* router = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        router = m_routingEngineRaw;
+    }
+
+    if (!router) {
+        return false;
+    }
+
+    std::string nextHop = router->ResolveNextHop(currentNodeId, destId);
+    if (nextHop.empty()) {
+        DropPacket(packet, Metrics::PacketDropReason::NoRoute, currentTime);
+        return false;
+    }
+
+    double hopDist = 1000.0e3;
+    double hopRate = defaultDataRateBps;
+
+    auto linkOpt = router->GetLink(currentNodeId, nextHop);
+    if (linkOpt.has_value()) {
+        if (!linkOpt->isActive) {
+            DropPacket(packet, Metrics::PacketDropReason::NoRoute, currentTime);
+            return false;
+        }
+        hopDist = linkOpt->distanceMeters;
+        hopRate = linkOpt->dataRateBps;
+    }
+
+    return ScheduleHopTransmission(packet, nextHop, hopRate, hopDist, sinrDb, currentTime,
+                                  scheduler, minSinrThresholdDb, procDelaySeconds, true);
+}
+
+bool PacketEngine::ForwardNextHop(std::shared_ptr<Packet> packet,
+                                 const std::string& currentNodeId,
+                                 double currentTime,
+                                 Core::EventScheduler& scheduler,
+                                 double defaultDataRateBps,
+                                 double sinrDb,
+                                 double minSinrThresholdDb,
+                                 double procDelaySeconds) {
+    if (!packet) {
+        return false;
+    }
+
+    if (packet->IsExpired(currentTime) || packet->GetTtl() == 0) {
+        DropPacket(packet, Metrics::PacketDropReason::TtlExpired, currentTime);
+        return false;
+    }
+
+    const std::string& destId = packet->GetDestinationNodeId();
+    if (currentNodeId == destId) {
+        DeliverPacket(packet, currentTime);
+        return true;
+    }
+
+    Routing::RoutingEngine* router = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        router = m_routingEngineRaw;
+    }
+
+    if (!router) {
+        return false;
+    }
+
+    std::string nextHop = router->ResolveNextHop(currentNodeId, destId);
+    if (nextHop.empty()) {
+        DropPacket(packet, Metrics::PacketDropReason::NoRoute, currentTime);
+        return false;
+    }
+
+    double hopDist = 1000.0e3;
+    double hopRate = defaultDataRateBps;
+
+    auto linkOpt = router->GetLink(currentNodeId, nextHop);
+    if (linkOpt.has_value()) {
+        if (!linkOpt->isActive) {
+            DropPacket(packet, Metrics::PacketDropReason::NoRoute, currentTime);
+            return false;
+        }
+        hopDist = linkOpt->distanceMeters;
+        hopRate = linkOpt->dataRateBps;
+    }
+
+    return ScheduleHopTransmission(packet, nextHop, hopRate, hopDist, sinrDb, currentTime,
+                                  scheduler, minSinrThresholdDb, procDelaySeconds, true);
+}
+
 bool PacketEngine::ScheduleHopTransmission(std::shared_ptr<Packet> packet,
                                           const std::string& nextNodeId,
                                           double dataRateBps,
@@ -441,7 +593,8 @@ bool PacketEngine::ScheduleHopTransmission(std::shared_ptr<Packet> packet,
                                           double currentTime,
                                           Core::EventScheduler& scheduler,
                                           double minSinrThresholdDb,
-                                          double procDelaySeconds) {
+                                          double procDelaySeconds,
+                                          bool autoForwardMultiHop) {
     auto res = TransmitHop(packet, nextNodeId, dataRateBps, distanceMeters,
                            sinrDb, currentTime, minSinrThresholdDb, procDelaySeconds);
     if (!res.success) {
@@ -458,8 +611,11 @@ bool PacketEngine::ScheduleHopTransmission(std::shared_ptr<Packet> packet,
     } else {
         // Intermediate hop (e.g. inter-satellite link) -> trigger routing at arrival
         scheduler.ScheduleEvent(arrivalTime, 5, Core::EventType::RoutePacket,
-                                [packet]() {
-                                    (void)packet;
+                                [this, packet, nextNodeId, arrivalTime, &scheduler, dataRateBps, sinrDb, minSinrThresholdDb, procDelaySeconds, autoForwardMultiHop]() {
+                                    if (autoForwardMultiHop) {
+                                        ForwardNextHop(packet, nextNodeId, arrivalTime, scheduler,
+                                                       dataRateBps, sinrDb, minSinrThresholdDb, procDelaySeconds);
+                                    }
                                 });
     }
 
