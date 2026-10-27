@@ -340,6 +340,27 @@ void RoutingEngine::SetLinkActive(const std::string& srcNodeId, const std::strin
     }
 }
 
+void RoutingEngine::TriggerLinkFailure(const std::string& srcNodeId, const std::string& destNodeId,
+                                      bool bidirectional) {
+    SetLinkActive(srcNodeId, destNodeId, false, bidirectional);
+}
+
+void RoutingEngine::RestoreLink(const std::string& srcNodeId, const std::string& destNodeId,
+                               bool bidirectional) {
+    SetLinkActive(srcNodeId, destNodeId, true, bidirectional);
+}
+
+bool RoutingEngine::IsSatelliteInPolarRegion(const std::string& satId) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_satelliteMap.find(satId);
+    if (it != m_satelliteMap.end() && it->second) {
+        Utils::Position3D pos = it->second->GetOrbitState().GetEcefPosition();
+        double lat = CalculateLatitudeDeg(pos);
+        return (std::abs(lat) > m_maxPolarLatDeg);
+    }
+    return false;
+}
+
 bool RoutingEngine::HasLink(const std::string& srcNodeId, const std::string& destNodeId) const {
     std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_adjacencyList.find(srcNodeId);
@@ -530,7 +551,7 @@ std::vector<std::string> RoutingEngine::DoCalculateRoute(const std::string& srcN
         // Explore all outgoing active cross-links
         for (const auto& link : it->second) {
             if (!link.isActive) {
-                continue; // Skip deactivated or broken links (e.g. polar shutoff)
+                continue; // Skip deactivated or broken links (e.g. polar shutoff or failure)
             }
 
             double edgeCost = DoGetEdgeWeight(u, link);
@@ -600,6 +621,11 @@ std::string RoutingEngine::ResolveNextHop(const std::string& currentNodeId, cons
     }
 
     return ""; // Unreachable destination
+}
+
+bool RoutingEngine::IsRouteAvailable(const std::string& srcNodeId, const std::string& destNodeId) {
+    auto route = CalculateRoute(srcNodeId, destNodeId);
+    return !route.empty();
 }
 
 // ===========================================================================

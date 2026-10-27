@@ -24,6 +24,10 @@ namespace NtnSim::Core {
 class EventScheduler;
 }
 
+namespace NtnSim::Routing {
+class RoutingEngine;
+}
+
 namespace NtnSim::Packet {
 
 /**
@@ -95,7 +99,7 @@ struct TransmissionResult {
 
 /**
  * @brief Manages queuing, traffic generation, buffer limits, physical latency modeling,
- *        DropTail policies, and event-driven telemetry hooks into MetricsEngine.
+ *        DropTail policies, multi-hop routing integration, and event-driven telemetry hooks.
  */
 class PacketEngine {
 public:
@@ -104,6 +108,8 @@ public:
     PacketEngine();
     explicit PacketEngine(std::shared_ptr<Metrics::MetricsEngine> metricsEngine);
     explicit PacketEngine(Metrics::MetricsEngine* metricsEngine);
+    PacketEngine(Metrics::MetricsEngine* metricsEngine, Routing::RoutingEngine* routingEngine);
+    PacketEngine(std::shared_ptr<Metrics::MetricsEngine> metricsEngine, std::shared_ptr<Routing::RoutingEngine> routingEngine);
     ~PacketEngine();
 
     // =========================================================================
@@ -220,7 +226,7 @@ public:
                                   double procDelaySeconds = 0.00001);
 
     // =========================================================================
-    // Phase 5: Metrics Engine Hook & Event-Driven Delivery
+    // Telemetry & Metrics Hook
     // =========================================================================
 
     void SetMetricsEngine(std::shared_ptr<Metrics::MetricsEngine> metricsEngine);
@@ -237,8 +243,44 @@ public:
      */
     void DropPacket(std::shared_ptr<Packet> packet, Metrics::PacketDropReason reason, double timestamp);
 
+    // =========================================================================
+    // Multi-Hop Routing Engine Integration & Discrete-Event Forwarding
+    // =========================================================================
+
+    void SetRoutingEngine(std::shared_ptr<Routing::RoutingEngine> routingEngine);
+    void SetRoutingEngine(Routing::RoutingEngine* routingEngine);
+    Routing::RoutingEngine* GetRoutingEngine() const;
+
+    /**
+     * @brief Initiates end-to-end multi-hop packet routing from currentNodeId towards destination.
+     *        Queries the RoutingEngine for next hop, checks optical ISL parameters,
+     *        and schedules hop-by-hop transmission in EventScheduler until reaching destination.
+     */
+    bool RoutePacketMultiHop(std::shared_ptr<Packet> packet,
+                            const std::string& currentNodeId,
+                            double currentTime,
+                            Core::EventScheduler& scheduler,
+                            double defaultDataRateBps = 10.0e9,
+                            double sinrDb = 30.0,
+                            double minSinrThresholdDb = 0.0,
+                            double procDelaySeconds = 0.00001);
+
+    /**
+     * @brief Handles intermediate hop arrival: queries RoutingEngine, detects link failures,
+     *        reroutes if necessary, and schedules subsequent hop or final delivery.
+     */
+    bool ForwardNextHop(std::shared_ptr<Packet> packet,
+                        const std::string& currentNodeId,
+                        double currentTime,
+                        Core::EventScheduler& scheduler,
+                        double defaultDataRateBps = 10.0e9,
+                        double sinrDb = 30.0,
+                        double minSinrThresholdDb = 0.0,
+                        double procDelaySeconds = 0.00001);
+
     /**
      * @brief Schedules an event-driven hop transmission in the EventScheduler.
+     * @param autoForwardMultiHop If true and RoutingEngine is configured, subsequent hops are automatically scheduled upon arrival.
      */
     bool ScheduleHopTransmission(std::shared_ptr<Packet> packet,
                                 const std::string& nextNodeId,
@@ -248,7 +290,8 @@ public:
                                 double currentTime,
                                 Core::EventScheduler& scheduler,
                                 double minSinrThresholdDb = 0.0,
-                                double procDelaySeconds = 0.00001);
+                                double procDelaySeconds = 0.00001,
+                                bool autoForwardMultiHop = false);
 
     // Telemetry getters
     uint64_t GetTotalPacketsSent() const;
@@ -264,6 +307,9 @@ private:
 
     Metrics::MetricsEngine* m_metricsEngineRaw{nullptr};
     std::shared_ptr<Metrics::MetricsEngine> m_metricsEngineShared{nullptr};
+
+    Routing::RoutingEngine* m_routingEngineRaw{nullptr};
+    std::shared_ptr<Routing::RoutingEngine> m_routingEngineShared{nullptr};
 
     Utils::RandomGenerator m_rng;
     uint64_t m_nextPacketId{1};

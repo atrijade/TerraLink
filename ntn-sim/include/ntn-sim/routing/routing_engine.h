@@ -55,6 +55,9 @@ struct NodeTopology {
  *   * Configurable cost metrics: MinLatency, MinHops, CongestionAware
  *   * End-to-end route calculation (CalculateRoute)
  *   * O(1) forwarding table cache and hop-by-hop lookup (ResolveNextHop)
+ * - Phase 3 & 4: Multi-Hop Forwarding & Dynamic Re-Routing (Failover & Polar Disruption)
+ *   * Recomputes alternate detour routes around severed links
+ *   * Dynamic polar shut-off state tracking
  */
 class RoutingEngine {
 public:
@@ -142,6 +145,18 @@ public:
                        bool active, bool bidirectional = true);
 
     /**
+     * @brief Simulates an ISL link failure event (Phase 4 Failover).
+     */
+    void TriggerLinkFailure(const std::string& srcNodeId, const std::string& destNodeId,
+                            bool bidirectional = true);
+
+    /**
+     * @brief Restores an ISL link after a failure or maintenance event (Phase 4).
+     */
+    void RestoreLink(const std::string& srcNodeId, const std::string& destNodeId,
+                     bool bidirectional = true);
+
+    /**
      * @brief Checks if a directed link exists from srcNodeId to destNodeId.
      */
     bool HasLink(const std::string& srcNodeId, const std::string& destNodeId) const;
@@ -174,6 +189,11 @@ public:
      * @brief Returns the total count of operational links in the entire graph.
      */
     size_t GetTotalActiveLinksCount() const;
+
+    /**
+     * @brief Checks if a specific satellite is currently inside the polar shut-off zone (Phase 4).
+     */
+    bool IsSatelliteInPolarRegion(const std::string& satId) const;
 
     // -----------------------------------------------------------------------
     // Congestion Delay Management (For CongestionAware Metric)
@@ -215,6 +235,11 @@ public:
      * @return Next node ID to forward packet to, or empty string if unreachable.
      */
     std::string ResolveNextHop(const std::string& currentNodeId, const std::string& destNodeId);
+
+    /**
+     * @brief Checks if a viable active route exists between two nodes.
+     */
+    bool IsRouteAvailable(const std::string& srcNodeId, const std::string& destNodeId);
 
     // -----------------------------------------------------------------------
     // Route Analysis Helpers
