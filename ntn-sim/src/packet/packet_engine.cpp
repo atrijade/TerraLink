@@ -1,6 +1,7 @@
 #include "ntn-sim/packet/packet_engine.h"
 #include "ntn-sim/metrics/metrics_engine.h"
 #include "ntn-sim/routing/routing_engine.h"
+#include "ntn-sim/gateway/gateway.h"
 #include "ntn-sim/core/event_scheduler.h"
 #include "ntn-sim/core/event.h"
 #include <cmath>
@@ -434,10 +435,22 @@ void PacketEngine::DeliverPacket(std::shared_ptr<Packet> packet, double delivery
     packet->SetArrivalTime(deliveryTime);
     double latency = packet->GetEndToEndLatency();
 
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_totalDelivered++;
-    if (m_metricsEngineRaw) {
-        m_metricsEngineRaw->RecordPacketReceived(packet->GetId(), latency, deliveryTime);
+    Gateway::Gateway* targetGateway = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_totalDelivered++;
+        if (m_metricsEngineRaw) {
+            m_metricsEngineRaw->RecordPacketReceived(packet->GetId(), latency, deliveryTime);
+        }
+
+        auto it = m_gatewaysRaw.find(packet->GetDestinationNodeId());
+        if (it != m_gatewaysRaw.end()) {
+            targetGateway = it->second;
+        }
+    }
+
+    if (targetGateway) {
+        targetGateway->ReceivePacket(packet, deliveryTime);
     }
 }
 
@@ -450,6 +463,42 @@ void PacketEngine::DropPacket(std::shared_ptr<Packet> packet, Metrics::PacketDro
     if (m_metricsEngineRaw) {
         m_metricsEngineRaw->RecordPacketDropped(packet->GetId(), reason, timestamp);
     }
+}
+
+// =========================================================================
+// Gateway Packet Sink Integration
+// =========================================================================
+
+void PacketEngine::RegisterGateway(Gateway::Gateway* gateway) {
+    if (!gateway) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_gatewaysRaw[gateway->GetId()] = gateway;
+}
+
+void PacketEngine::RegisterGateway(std::shared_ptr<Gateway::Gateway> gateway) {
+    if (!gateway) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_gatewaysShared[gateway->GetId()] = gateway;
+    m_gatewaysRaw[gateway->GetId()] = gateway.get();
+}
+
+void PacketEngine::UnregisterGateway(const std::string& gatewayId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_gatewaysRaw.erase(gatewayId);
+    m_gatewaysShared.erase(gatewayId);
+}
+
+Gateway::Gateway* PacketEngine::GetGateway(const std::string& gatewayId) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_gatewaysRaw.find(gatewayId);
+    if (it != m_gatewaysRaw.end()) {
+        return it->second;
+    }
+    return nullptr;
 }
 
 // =========================================================================

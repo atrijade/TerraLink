@@ -28,6 +28,10 @@ namespace NtnSim::Routing {
 class RoutingEngine;
 }
 
+namespace NtnSim::Gateway {
+class Gateway;
+}
+
 namespace NtnSim::Packet {
 
 /**
@@ -244,6 +248,14 @@ public:
     void DropPacket(std::shared_ptr<Packet> packet, Metrics::PacketDropReason reason, double timestamp);
 
     // =========================================================================
+    // Gateway Packet Sink Integration
+    // =========================================================================
+    void RegisterGateway(Gateway::Gateway* gateway);
+    void RegisterGateway(std::shared_ptr<Gateway::Gateway> gateway);
+    void UnregisterGateway(const std::string& gatewayId);
+    Gateway::Gateway* GetGateway(const std::string& gatewayId) const;
+
+    // =========================================================================
     // Multi-Hop Routing Engine Integration & Discrete-Event Forwarding
     // =========================================================================
 
@@ -310,6 +322,9 @@ private:
 
     Routing::RoutingEngine* m_routingEngineRaw{nullptr};
     std::shared_ptr<Routing::RoutingEngine> m_routingEngineShared{nullptr};
+
+    std::unordered_map<std::string, Gateway::Gateway*> m_gatewaysRaw;
+    std::unordered_map<std::string, std::shared_ptr<Gateway::Gateway>> m_gatewaysShared;
 
     Utils::RandomGenerator m_rng;
     uint64_t m_nextPacketId{1};
