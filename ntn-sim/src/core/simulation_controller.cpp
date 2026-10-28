@@ -8,6 +8,7 @@
 #include "ntn-sim/packet/packet_engine.h"
 #include "ntn-sim/routing/routing_engine.h"
 #include "ntn-sim/gateway/gateway.h"
+#include "ntn-sim/gateway/gateway_engine.h"
 #include "ntn-sim/metrics/metrics_engine.h"
 #include "ntn-sim/api/rest_api.h"
 #include "ntn-sim/logger/logger.h"
@@ -41,10 +42,18 @@ void SimulationController::InitializeEngines() {
     m_metricsEngine = std::make_unique<Metrics::MetricsEngine>();
     m_restApi = std::make_unique<Api::RestApi>();
 
-    // Wire telemetry and routing engines into PacketEngine
+    m_gatewayEngine = std::make_unique<Gateway::GatewayEngine>(m_metricsEngine.get(), m_routingEngine.get());
+    m_gatewayEngine->SetOrbitEngine(m_orbitEngine.get());
+    m_gatewayEngine->SetCoverageEngine(m_coverageEngine.get());
+    m_gatewayEngine->SetSignalEngine(m_signalEngine.get());
+    m_gatewayEngine->SetPacketEngine(m_packetEngine.get());
+    m_gatewayEngine->AddGateway(m_gateway.get());
+
+    // Wire telemetry, routing, and gateway into engines
     m_packetEngine->SetMetricsEngine(m_metricsEngine.get());
     m_handoverEngine->SetMetricsEngine(m_metricsEngine.get());
     m_packetEngine->SetRoutingEngine(m_routingEngine.get());
+    m_packetEngine->RegisterGateway(m_gateway.get());
 }
 
 void SimulationController::StartSimulation() {
@@ -84,6 +93,7 @@ Handover::HandoverEngine* SimulationController::GetHandoverEngine() const { retu
 Packet::PacketEngine* SimulationController::GetPacketEngine() const { return m_packetEngine.get(); }
 Routing::RoutingEngine* SimulationController::GetRoutingEngine() const { return m_routingEngine.get(); }
 Gateway::Gateway* SimulationController::GetGateway() const { return m_gateway.get(); }
+Gateway::GatewayEngine* SimulationController::GetGatewayEngine() const { return m_gatewayEngine.get(); }
 Metrics::MetricsEngine* SimulationController::GetMetricsEngine() const { return m_metricsEngine.get(); }
 Api::RestApi* SimulationController::GetRestApi() const { return m_restApi.get(); }
 

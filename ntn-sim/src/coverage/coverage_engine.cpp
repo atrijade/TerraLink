@@ -1,6 +1,7 @@
 #include "ntn-sim/coverage/coverage_engine.h"
 #include "ntn-sim/orbit/satellite.h"
 #include "ntn-sim/user/user.h"
+#include "ntn-sim/gateway/gateway.h"
 #include "ntn-sim/utils/math_utils.h"
 
 namespace NtnSim::Coverage {
@@ -12,21 +13,21 @@ CoverageEngine::CoverageEngine(const CoverageConfig& config)
 
 CoverageEngine::~CoverageEngine() {}
 
-CoverageInfo CoverageEngine::CalculateCoverage(const Orbit::Satellite& sat, const User::User& user) const {
+CoverageInfo CoverageEngine::CalculateCoverage(const Orbit::Satellite& sat, const Utils::GeodeticPosition& groundPos) const {
     CoverageInfo info;
 
-    // Step 1: Convert user geodetic (lat, lon, alt) -> ECEF (X, Y, Z) in metres
-    Utils::Position3D userEcef = Utils::MathUtils::GeodeticToEcef(user.GetPosition());
+    // Step 1: Convert ground geodetic (lat, lon, alt) -> ECEF (X, Y, Z) in metres
+    Utils::Position3D groundEcef = Utils::MathUtils::GeodeticToEcef(groundPos);
 
     // Step 2: Get satellite ECEF position (metres)
     Utils::Position3D satEcef = sat.GetOrbitState().GetEcefPosition();
 
     // Step 3: Compute slant range distance (m)
-    double distanceMeters = Utils::MathUtils::CalculateDistance(userEcef, satEcef);
+    double distanceMeters = Utils::MathUtils::CalculateDistance(groundEcef, satEcef);
     info.SetDistanceMeters(distanceMeters);
 
     // Step 4: Compute elevation angle (deg)
-    double elevationDeg = Utils::MathUtils::CalculateElevationAngle(userEcef, satEcef);
+    double elevationDeg = Utils::MathUtils::CalculateElevationAngle(groundEcef, satEcef);
     info.SetElevationAngleDeg(elevationDeg);
 
     // Step 5: Visibility — satellite must be above minimum elevation threshold
@@ -37,11 +38,11 @@ CoverageInfo CoverageEngine::CalculateCoverage(const Orbit::Satellite& sat, cons
     if (visible && distanceMeters > 0.0) {
         Utils::Position3D satVelEcef = sat.GetOrbitState().GetEcefVelocity(); // km/s
 
-        double slant_x = satEcef.x - userEcef.x;
-        double slant_y = satEcef.y - userEcef.y;
-        double slant_z = satEcef.z - userEcef.z;
+        double slant_x = satEcef.x - groundEcef.x;
+        double slant_y = satEcef.y - groundEcef.y;
+        double slant_z = satEcef.z - groundEcef.z;
 
-        // Unit vector from user toward satellite
+        // Unit vector from ground station toward satellite
         double uhat_x = slant_x / distanceMeters;
         double uhat_y = slant_y / distanceMeters;
         double uhat_z = slant_z / distanceMeters;
@@ -56,6 +57,14 @@ CoverageInfo CoverageEngine::CalculateCoverage(const Orbit::Satellite& sat, cons
     }
 
     return info;
+}
+
+CoverageInfo CoverageEngine::CalculateCoverage(const Orbit::Satellite& sat, const User::User& user) const {
+    return CalculateCoverage(sat, user.GetPosition());
+}
+
+CoverageInfo CoverageEngine::CalculateCoverage(const Orbit::Satellite& sat, const Gateway::Gateway& gateway) const {
+    return CalculateCoverage(sat, gateway.GetPosition());
 }
 
 std::vector<std::string> CoverageEngine::GetVisibleSatellites(
@@ -73,6 +82,21 @@ std::vector<std::string> CoverageEngine::GetVisibleSatellites(
     return visibleIds;
 }
 
+std::vector<std::string> CoverageEngine::GetVisibleSatellites(
+    const Gateway::Gateway& gateway,
+    const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const
+{
+    std::vector<std::string> visibleIds;
+    for (const auto& sat : satellites) {
+        if (!sat) continue;
+        CoverageInfo info = CalculateCoverage(*sat, gateway);
+        if (info.IsVisible()) {
+            visibleIds.push_back(sat->GetId());
+        }
+    }
+    return visibleIds;
+}
+
 std::shared_ptr<Orbit::Satellite> CoverageEngine::GetBestSatellite(
     const User::User& user,
     const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const
@@ -83,6 +107,24 @@ std::shared_ptr<Orbit::Satellite> CoverageEngine::GetBestSatellite(
     for (const auto& sat : satellites) {
         if (!sat) continue;
         CoverageInfo info = CalculateCoverage(*sat, user);
+        if (info.IsVisible() && info.GetElevationAngleDeg() > maxElevation) {
+            maxElevation = info.GetElevationAngleDeg();
+            bestSat = sat;
+        }
+    }
+    return bestSat;
+}
+
+std::shared_ptr<Orbit::Satellite> CoverageEngine::GetBestSatellite(
+    const Gateway::Gateway& gateway,
+    const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const
+{
+    std::shared_ptr<Orbit::Satellite> bestSat = nullptr;
+    double maxElevation = -90.0;
+
+    for (const auto& sat : satellites) {
+        if (!sat) continue;
+        CoverageInfo info = CalculateCoverage(*sat, gateway);
         if (info.IsVisible() && info.GetElevationAngleDeg() > maxElevation) {
             maxElevation = info.GetElevationAngleDeg();
             bestSat = sat;

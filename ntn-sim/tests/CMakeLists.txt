@@ -19,6 +19,7 @@ add_executable(ntn_sim_tests
     test_handover_engine.cpp
     test_packet_engine.cpp
     test_routing_engine.cpp
+    test_gateway.cpp
     test_metrics_engine.cpp
     test_logger.cpp
     test_utils.cpp
