@@ -81,18 +81,37 @@ public:
     bool IsRunning() const;
     int GetPort() const;
 
+    // =========================================================================
+    // Step 2: REST JSON State Serializers
+    // =========================================================================
+
     /**
      * @brief REST Handler GET /satellites
+     *        Serializes satellite IDs, ECEF positions, velocities, and geodetic coordinates.
      */
     std::string HandleGetSatellites() const;
 
     /**
+     * @brief REST Handler GET /topology
+     *        Serializes active ISL cross-links and feeder links.
+     */
+    std::string HandleGetTopology() const;
+
+    /**
+     * @brief REST Handler GET /gateways
+     *        Serializes gateway stats (throughput, jitter, connected satellite, loss).
+     */
+    std::string HandleGetGateways() const;
+
+    /**
      * @brief REST Handler GET /users
+     *        Serializes user equipment terminals, coordinates, and serving satellites.
      */
     std::string HandleGetUsers() const;
 
     /**
      * @brief REST Handler GET /metrics
+     *        Serializes aggregate 3GPP KPIs (PDR, latency, percentiles, handovers, drops).
      */
     std::string HandleGetMetrics() const;
 

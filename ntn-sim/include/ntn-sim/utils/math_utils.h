@@ -44,6 +44,13 @@ public:
     static Position3D GeodeticToEcef(const GeodeticPosition& geo);
 
     /**
+     * @brief Converts ECEF coordinates (metres) to Geodetic coordinates (WGS-84).
+     * @param ecef 3D position in ECEF frame.
+     * @return Geodetic position (Latitude deg, Longitude deg, Altitude m).
+     */
+    static GeodeticPosition EcefToGeodetic(const Position3D& ecef);
+
+    /**
      * @brief Calculates elevation angle from a ground station to a satellite.
      * @param groundStation ECEF position of ground station.
      * @param satellite ECEF position of satellite.
