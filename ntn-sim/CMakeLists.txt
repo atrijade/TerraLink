@@ -62,6 +62,7 @@ set(SOURCES
     
     # Gateway
     ${SRC_DIR}/gateway/gateway.cpp
+    ${SRC_DIR}/gateway/gateway_engine.cpp
     
     # Metrics
     ${SRC_DIR}/metrics/metric.cpp
@@ -116,6 +117,7 @@ set(HEADERS
     ${INC_DIR}/ntn-sim/routing/routing_engine.h
     
     ${INC_DIR}/ntn-sim/gateway/gateway.h
+    ${INC_DIR}/ntn-sim/gateway/gateway_engine.h
     
     ${INC_DIR}/ntn-sim/metrics/metric.h
     ${INC_DIR}/ntn-sim/metrics/metrics_engine.h

@@ -2,12 +2,40 @@
 
 #include "ntn-sim/utils/math_utils.h"
 #include <string>
+#include <vector>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 
+namespace NtnSim::Orbit {
+class Satellite;
+}
+
 namespace NtnSim::Packet {
 class Packet;
+class PacketEngine;
+}
+
+namespace NtnSim::Signal {
+class SignalEngine;
+class SignalInfo;
+}
+
+namespace NtnSim::Coverage {
+class CoverageEngine;
+class CoverageInfo;
+}
+
+namespace NtnSim::Routing {
+class RoutingEngine;
+}
+
+namespace NtnSim::Metrics {
+class MetricsEngine;
+}
+
+namespace NtnSim::Core {
+class EventScheduler;
 }
 
 namespace NtnSim::Gateway {
@@ -64,7 +92,19 @@ struct GatewayStats {
 };
 
 /**
- * @brief Represents an Internet Gateway or satellite Ground Station.
+ * @brief Ground station parabolic dish pointing vector and geometry.
+ */
+struct DishPointing {
+    double azimuthDeg{0.0};       ///< 0 to 360 deg clockwise from true North
+    double elevationDeg{0.0};     ///< -90 to +90 deg relative to local horizon
+    double slantRangeMeters{0.0}; ///< Line-of-sight distance to satellite (meters)
+    double dopplerShiftHz{0.0};   ///< Carrier frequency Doppler shift (Hz)
+    double losVelocityKms{0.0};   ///< Line-of-sight relative velocity (km/s)
+    bool isVisible{false};        ///< True if elevationDeg >= minElevationDeg
+};
+
+/**
+ * @brief Represents an Internet Gateway or satellite Ground Station with 3GPP NTN feeder capabilities.
  */
 class Gateway {
 public:
@@ -96,19 +136,8 @@ public:
     // =========================================================================
     // Step 2: Packet Sink & Statistics
     // =========================================================================
-    /**
-     * @brief Receives a packet by ID (legacy / basic overload).
-     */
     bool ReceivePacket(uint64_t packetId);
-
-    /**
-     * @brief Receives a packet with explicit metadata for sink telemetry.
-     */
     bool ReceivePacket(uint64_t packetId, double timestamp, uint32_t sizeBytes = 1500, double creationTime = 0.0);
-
-    /**
-     * @brief Receives a full Packet object downlinked from satellite.
-     */
     bool ReceivePacket(std::shared_ptr<Packet::Packet> packet, double timestamp);
 
     GatewayStats GetStatistics() const;
@@ -119,9 +148,71 @@ public:
     double GetJitterSeconds() const;
     double GetThroughputMbps() const;
     double GetAverageLatencySeconds() const;
+    double GetUtilizationPercent() const;
     void ResetStatistics();
 
+    // =========================================================================
+    // Step 3 & 4: Feeder Link Handover & Engine Integration
+    // =========================================================================
+
+    /**
+     * @brief Queries satellite position and computes dish pointing (azimuth, elevation, range, Doppler).
+     */
+    DishPointing CalculateDishPointing(const Orbit::Satellite& sat) const;
+
+    /**
+     * @brief Computes 3GPP NTN feeder link budget (RSRP, SINR, FSPL, Doppler) using SignalEngine.
+     */
+    Signal::SignalInfo CalculateFeederSignal(const Orbit::Satellite& sat,
+                                            const Signal::SignalEngine* signalEngine = nullptr) const;
+
+    /**
+     * @brief Selects the best visible feeder satellite (highest elevation angle >= 10 deg).
+     */
+    std::shared_ptr<Orbit::Satellite> SelectBestFeederSatellite(
+        const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const;
+
+    /**
+     * @brief Evaluates feeder handover condition. If current satellite approaches the 10 deg mask
+     *        (or is lost), switches tracking to the next rising satellite and updates RoutingEngine.
+     * @return True if a feeder link handover was executed.
+     */
+    bool EvaluateFeederHandover(
+        const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites,
+        Routing::RoutingEngine* routingEngine,
+        double currentTime,
+        Metrics::MetricsEngine* metricsEngine = nullptr,
+        double handoverThresholdDeg = 12.0);
+
+    /**
+     * @brief Directly switches feeder tracking to new satellite and updates RoutingEngine graph edges.
+     */
+    bool SwitchFeederSatellite(
+        const std::string& newSatId,
+        double distanceMeters,
+        Routing::RoutingEngine* routingEngine,
+        double currentTime,
+        Metrics::MetricsEngine* metricsEngine = nullptr);
+
+    /**
+     * @brief Injects an uplink packet from this gateway into the constellation.
+     */
+    std::shared_ptr<Packet::Packet> InjectUplinkPacket(
+        Packet::PacketEngine& packetEngine,
+        uint64_t packetId,
+        uint32_t sizeBytes,
+        double currentTime,
+        const std::string& destinationId,
+        Core::EventScheduler* scheduler = nullptr);
+
+    /**
+     * @brief Records gateway performance telemetry into MetricsEngine.
+     */
+    void RecordMetrics(Metrics::MetricsEngine* metricsEngine, double currentTime) const;
+
 private:
+    double GetUtilizationPercentInternal() const;
+
     std::string m_id;
     Utils::GeodeticPosition m_position;
     FeederLinkProfile m_feederProfile;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ntn-sim/coverage/coverage_info.h"
+#include "ntn-sim/utils/math_utils.h"
 #include <vector>
 #include <memory>
 #include <string>
@@ -10,6 +11,9 @@ class Satellite;
 }
 namespace NtnSim::User {
 class User;
+}
+namespace NtnSim::Gateway {
+class Gateway;
 }
 
 namespace NtnSim::Coverage {
@@ -31,9 +35,19 @@ public:
     ~CoverageEngine();
 
     /**
+     * @brief Computes coverage metrics between one satellite and a geodetic position on Earth.
+     */
+    CoverageInfo CalculateCoverage(const Orbit::Satellite& sat, const Utils::GeodeticPosition& groundPos) const;
+
+    /**
      * @brief Computes coverage metrics between one satellite and one user.
      */
     CoverageInfo CalculateCoverage(const Orbit::Satellite& sat, const User::User& user) const;
+
+    /**
+     * @brief Computes coverage metrics between one satellite and a gateway.
+     */
+    CoverageInfo CalculateCoverage(const Orbit::Satellite& sat, const Gateway::Gateway& gateway) const;
 
     /**
      * @brief Identifies all satellites that are visible to the user terminal.
@@ -41,10 +55,20 @@ public:
     std::vector<std::string> GetVisibleSatellites(const User::User& user, const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const;
 
     /**
+     * @brief Identifies all satellites that are visible to the gateway ground station.
+     */
+    std::vector<std::string> GetVisibleSatellites(const Gateway::Gateway& gateway, const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const;
+
+    /**
      * @brief Finds and returns the visible satellite with the highest elevation angle for this user.
      * @return Shared pointer to best Satellite, or nullptr if no satellite is visible.
      */
     std::shared_ptr<Orbit::Satellite> GetBestSatellite(const User::User& user, const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const;
+
+    /**
+     * @brief Finds and returns the visible satellite with the highest elevation angle for this gateway.
+     */
+    std::shared_ptr<Orbit::Satellite> GetBestSatellite(const Gateway::Gateway& gateway, const std::vector<std::shared_ptr<Orbit::Satellite>>& satellites) const;
 
     CoverageConfig GetConfig() const;
     void SetConfig(const CoverageConfig& config);
