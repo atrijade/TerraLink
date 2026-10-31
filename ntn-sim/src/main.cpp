@@ -42,12 +42,23 @@ int main(int argc, char* argv[]) {
     logger.Log(NtnSim::Logger::LogLevel::INFO, "Initializing simulation engine architecture...");
     controller.InitializeEngines();
 
+    // Read PORT from environment variable (injected by Render/Docker) or default to 8080
+    int port = 8080;
+    const char* envPort = std::getenv("PORT");
+    if (envPort && envPort[0] != '\0') {
+        try {
+            port = std::stoi(envPort);
+        } catch (...) {
+            port = 8080;
+        }
+    }
+
     auto* api = controller.GetRestApi();
     if (api) {
-        api->StartServer(8080);
-        logger.Log(NtnSim::Logger::LogLevel::INFO, "REST API server listening on http://localhost:8080");
+        api->StartServer(port);
+        logger.Log(NtnSim::Logger::LogLevel::INFO, "REST API server listening on port " + std::to_string(port));
         std::cout << "\n=========================================================\n";
-        std::cout << "  NTN-Sim REST API listening on http://localhost:8080    \n";
+        std::cout << "  NTN-Sim REST API listening on port " << port << "          \n";
         std::cout << "  Ready for TerraLink Web UI connection!                 \n";
         std::cout << "  (Press Ctrl+C to stop server)                          \n";
         std::cout << "=========================================================\n\n";
@@ -57,7 +68,7 @@ int main(int argc, char* argv[]) {
     controller.StartSimulation();
 
     if (api && api->IsRunning()) {
-        std::cout << "Simulation loop ready. REST API server is actively listening on port 8080...\n";
+        std::cout << "Simulation loop ready. Server active on port " << port << "...\n";
         while (g_keepRunning.load() && api->IsRunning()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }

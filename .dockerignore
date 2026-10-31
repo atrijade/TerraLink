@@ -1,0 +1,8 @@
+.git
+.gitignore
+.vscode
+build
+*.log
+web-ui/node_modules
+web-ui/dist
+web-ui/.tmp
