@@ -47,6 +47,7 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <filesystem>
 
 namespace NtnSim::Api {
 
@@ -159,6 +160,16 @@ bool RestApi::StartServer(int port) {
         res.status = 200;
         res.set_content("", "text/plain");
     });
+
+    // Mount static web UI assets (serves HTML/JS/CSS on Render and Docker)
+    std::error_code ec;
+    if (std::filesystem::exists("./www", ec)) {
+        m_impl->server.set_mount_point("/", "./www");
+    } else if (std::filesystem::exists("./dist", ec)) {
+        m_impl->server.set_mount_point("/", "./dist");
+    } else if (std::filesystem::exists("../web-ui/dist", ec)) {
+        m_impl->server.set_mount_point("/", "../web-ui/dist");
+    }
 
     // 2. Bind GET telemetry and state routes (support both root path and /api/ prefix)
     auto bindGetHandler = [this](const std::string& path, auto handlerFunc) {
