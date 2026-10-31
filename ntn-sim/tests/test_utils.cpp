@@ -20,6 +20,16 @@ TEST(UtilsTest, MathUtilsCalculations) {
     EXPECT_DOUBLE_EQ(NtnSim::Utils::MathUtils::CalculateElevationAngle(p1, p2), 90.0);
 }
 
+TEST(UtilsTest, EcefToGeodeticRoundtrip) {
+    NtnSim::Utils::GeodeticPosition orig{37.7749, -122.4194, 600000.0};
+    auto ecef = NtnSim::Utils::MathUtils::GeodeticToEcef(orig);
+    auto geo = NtnSim::Utils::MathUtils::EcefToGeodetic(ecef);
+
+    EXPECT_NEAR(geo.latitude, orig.latitude, 1e-4);
+    EXPECT_NEAR(geo.longitude, orig.longitude, 1e-4);
+    EXPECT_NEAR(geo.altitude, orig.altitude, 1.0);
+}
+
 TEST(UtilsTest, RandomGeneratorInit) {
     NtnSim::Utils::RandomGenerator gen(12345);
     double val = gen.GetUniformDouble(0.0, 10.0);

@@ -69,6 +69,11 @@ public:
      */
     void StopSimulation();
 
+    /**
+     * @brief Checks if the simulation loop is currently active.
+     */
+    bool IsSimulationRunning() const;
+
     // Getters for dependency verification in tests
     EventScheduler* GetScheduler() const;
     Orbit::OrbitEngine* GetOrbitEngine() const;

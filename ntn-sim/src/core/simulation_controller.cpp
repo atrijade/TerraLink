@@ -40,7 +40,7 @@ void SimulationController::InitializeEngines() {
     Utils::GeodeticPosition gwPos{37.7749, -122.4194, 10.0};
     m_gateway = std::make_unique<Gateway::Gateway>("gw-0", gwPos);
     m_metricsEngine = std::make_unique<Metrics::MetricsEngine>();
-    m_restApi = std::make_unique<Api::RestApi>();
+    m_restApi = std::make_unique<Api::RestApi>(this);
 
     m_gatewayEngine = std::make_unique<Gateway::GatewayEngine>(m_metricsEngine.get(), m_routingEngine.get());
     m_gatewayEngine->SetOrbitEngine(m_orbitEngine.get());
@@ -82,6 +82,11 @@ void SimulationController::StartSimulation() {
 void SimulationController::StopSimulation() {
     Logger::Logger::GetInstance().Log(Logger::LogLevel::INFO, "Stopping simulation loop.");
     m_isRunning = false;
+}
+
+bool SimulationController::IsSimulationRunning() const {
+    return m_isRunning;
+
 }
 
 EventScheduler* SimulationController::GetScheduler() const { return m_scheduler.get(); }
