@@ -53,6 +53,7 @@ namespace NtnSim::Api {
 struct RestApi::Impl {
     httplib::Server server;
     std::thread workerThread;
+    std::thread simThread;
 };
 
 RestApi::RestApi()
@@ -202,13 +203,45 @@ bool RestApi::StartServer(int port) {
     auto stopCb = [this](const httplib::Request&, httplib::Response& res) {
         bool ok = HandlePostStop();
         std::ostringstream ss;
-        ss << "{\"success\": " << (ok ? "true" : "false") << ", \"status\": \"STOPPED\"}";
+        ss << "{\"success\": " << (ok ? "true" : "false") << ", \"status\": \"" << (ok ? "STOPPED" : "FAILED") << "\"}";
         res.set_content(ss.str(), "application/json");
     };
     m_impl->server.Post("/stop", stopCb);
     m_impl->server.Post("/api/stop", stopCb);
 
-    // 4. Start background worker thread listening on 0.0.0.0
+    // 4. Bind POST /api/inject/link-failure routes
+    auto linkFailureCb = [this](const httplib::Request& req, httplib::Response& res) {
+        std::string body = req.body;
+        if (body.empty()) {
+            std::string src = req.has_param("source") ? req.get_param_value("source") : (req.has_param("src") ? req.get_param_value("src") : "");
+            std::string dst = req.has_param("target") ? req.get_param_value("target") : (req.has_param("dest") ? req.get_param_value("dest") : "");
+            std::string bi = req.has_param("bidirectional") ? req.get_param_value("bidirectional") : "true";
+            body = "{\"source\":\"" + src + "\",\"target\":\"" + dst + "\",\"bidirectional\":" + bi + "}";
+        }
+        std::string respJson = HandlePostInjectLinkFailure(body);
+        res.set_content(respJson, "application/json");
+    };
+    m_impl->server.Post("/inject/link-failure", linkFailureCb);
+    m_impl->server.Post("/api/inject/link-failure", linkFailureCb);
+
+    // 5. Bind POST /api/inject/link-restore routes
+    auto linkRestoreCb = [this](const httplib::Request& req, httplib::Response& res) {
+        std::string body = req.body;
+        if (body.empty()) {
+            std::string src = req.has_param("source") ? req.get_param_value("source") : (req.has_param("src") ? req.get_param_value("src") : "");
+            std::string dst = req.has_param("target") ? req.get_param_value("target") : (req.has_param("dest") ? req.get_param_value("dest") : "");
+            std::string bi = req.has_param("bidirectional") ? req.get_param_value("bidirectional") : "true";
+            body = "{\"source\":\"" + src + "\",\"target\":\"" + dst + "\",\"bidirectional\":" + bi + "}";
+        }
+        std::string respJson = HandlePostRestoreLink(body);
+        res.set_content(respJson, "application/json");
+    };
+    m_impl->server.Post("/inject/link-restore", linkRestoreCb);
+    m_impl->server.Post("/api/inject/link-restore", linkRestoreCb);
+    m_impl->server.Post("/restore/link", linkRestoreCb);
+    m_impl->server.Post("/api/restore/link", linkRestoreCb);
+
+    // 6. Start background worker thread listening on 0.0.0.0
     m_impl->workerThread = std::thread([this, port]() {
         m_impl->server.listen("0.0.0.0", port);
     });
@@ -229,6 +262,12 @@ bool RestApi::StartServer(int port) {
 
 void RestApi::StopServer() {
     if (m_impl) {
+        if (m_controller) {
+            m_controller->StopSimulation();
+        }
+        if (m_impl->simThread.joinable()) {
+            m_impl->simThread.join();
+        }
         if (m_impl->server.is_running()) {
             m_impl->server.stop();
         }
@@ -465,19 +504,144 @@ std::string RestApi::HandleGetMetrics() const {
     return ss.str();
 }
 
+// =========================================================================
+// Step 4: Interactive Control Handlers
+// =========================================================================
+
 bool RestApi::HandlePostStart() {
-    if (m_controller) {
+    if (!m_controller) {
+        return false;
+    }
+    if (m_controller->IsSimulationRunning()) {
         return true;
     }
-    return false;
+    if (m_impl) {
+        if (m_impl->simThread.joinable()) {
+            m_impl->simThread.join();
+        }
+        m_impl->simThread = std::thread([this]() {
+            m_controller->StartSimulation();
+        });
+        return true;
+    }
+    m_controller->StartSimulation();
+    return true;
 }
 
 bool RestApi::HandlePostStop() {
-    if (m_controller) {
-        m_controller->StopSimulation();
-        return true;
+    if (!m_controller) {
+        return false;
     }
-    return false;
+    m_controller->StopSimulation();
+    if (m_impl && m_impl->simThread.joinable()) {
+        m_impl->simThread.join();
+    }
+    return true;
+}
+
+static std::string ExtractJsonValue(const std::string& json, const std::string& key) {
+    std::string searchKey = "\"" + key + "\"";
+    auto pos = json.find(searchKey);
+    if (pos == std::string::npos) return "";
+    pos += searchKey.length();
+    while (pos < json.length() && (json[pos] == ' ' || json[pos] == ':' || json[pos] == '\t' || json[pos] == '\r' || json[pos] == '\n')) {
+        pos++;
+    }
+    if (pos >= json.length()) return "";
+    if (json[pos] == '\"') {
+        pos++;
+        auto endPos = json.find('\"', pos);
+        if (endPos != std::string::npos) {
+            return json.substr(pos, endPos - pos);
+        }
+    } else {
+        auto endPos = json.find_first_of(",}\r\n \t", pos);
+        if (endPos != std::string::npos) {
+            return json.substr(pos, endPos - pos);
+        }
+        return json.substr(pos);
+    }
+    return "";
+}
+
+bool RestApi::InjectLinkFailure(const std::string& srcNodeId, const std::string& destNodeId, bool bidirectional) {
+    auto* routing = GetRoutingEngine();
+    if (!routing) {
+        return false;
+    }
+    routing->TriggerLinkFailure(srcNodeId, destNodeId, bidirectional);
+    return true;
+}
+
+bool RestApi::RestoreLink(const std::string& srcNodeId, const std::string& destNodeId, bool bidirectional) {
+    auto* routing = GetRoutingEngine();
+    if (!routing) {
+        return false;
+    }
+    routing->RestoreLink(srcNodeId, destNodeId, bidirectional);
+    return true;
+}
+
+std::string RestApi::HandlePostInjectLinkFailure(const std::string& requestBody) {
+    std::string src = ExtractJsonValue(requestBody, "source");
+    if (src.empty()) src = ExtractJsonValue(requestBody, "sourceId");
+    if (src.empty()) src = ExtractJsonValue(requestBody, "src");
+    if (src.empty()) src = ExtractJsonValue(requestBody, "srcNodeId");
+
+    std::string dst = ExtractJsonValue(requestBody, "target");
+    if (dst.empty()) dst = ExtractJsonValue(requestBody, "targetId");
+    if (dst.empty()) dst = ExtractJsonValue(requestBody, "dest");
+    if (dst.empty()) dst = ExtractJsonValue(requestBody, "destNodeId");
+    if (dst.empty()) dst = ExtractJsonValue(requestBody, "destination");
+
+    std::string biStr = ExtractJsonValue(requestBody, "bidirectional");
+    bool bidirectional = (biStr != "false" && biStr != "0");
+
+    if (src.empty() || dst.empty()) {
+        return "{\"success\":false,\"error\":\"Missing source or target node ID\"}";
+    }
+
+    bool success = InjectLinkFailure(src, dst, bidirectional);
+    std::ostringstream ss;
+    ss << "{"
+       << "\"success\":" << (success ? "true" : "false") << ","
+       << "\"action\":\"LINK_FAILURE_INJECTED\","
+       << "\"source\":\"" << src << "\","
+       << "\"target\":\"" << dst << "\","
+       << "\"bidirectional\":" << (bidirectional ? "true" : "false")
+       << "}";
+    return ss.str();
+}
+
+std::string RestApi::HandlePostRestoreLink(const std::string& requestBody) {
+    std::string src = ExtractJsonValue(requestBody, "source");
+    if (src.empty()) src = ExtractJsonValue(requestBody, "sourceId");
+    if (src.empty()) src = ExtractJsonValue(requestBody, "src");
+    if (src.empty()) src = ExtractJsonValue(requestBody, "srcNodeId");
+
+    std::string dst = ExtractJsonValue(requestBody, "target");
+    if (dst.empty()) dst = ExtractJsonValue(requestBody, "targetId");
+    if (dst.empty()) dst = ExtractJsonValue(requestBody, "dest");
+    if (dst.empty()) dst = ExtractJsonValue(requestBody, "destNodeId");
+    if (dst.empty()) dst = ExtractJsonValue(requestBody, "destination");
+
+    std::string biStr = ExtractJsonValue(requestBody, "bidirectional");
+    bool bidirectional = (biStr != "false" && biStr != "0");
+
+    if (src.empty() || dst.empty()) {
+        return "{\"success\":false,\"error\":\"Missing source or target node ID\"}";
+    }
+
+    bool success = RestoreLink(src, dst, bidirectional);
+    std::ostringstream ss;
+    ss << "{"
+       << "\"success\":" << (success ? "true" : "false") << ","
+       << "\"action\":\"LINK_RESTORED\","
+       << "\"source\":\"" << src << "\","
+       << "\"target\":\"" << dst << "\","
+       << "\"bidirectional\":" << (bidirectional ? "true" : "false")
+       << "}";
+    return ss.str();
 }
 
 } // namespace NtnSim::Api

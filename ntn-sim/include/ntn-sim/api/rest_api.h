@@ -127,6 +127,10 @@ public:
      */
     std::string HandleGetMetrics() const;
 
+    // =========================================================================
+    // Step 4: Interactive Control Handlers
+    // =========================================================================
+
     /**
      * @brief REST Handler POST /start
      */
@@ -136,6 +140,30 @@ public:
      * @brief REST Handler POST /stop
      */
     bool HandlePostStop();
+
+    /**
+     * @brief REST Handler POST /api/inject/link-failure
+     *        Extracts source and destination node IDs from request and triggers ISL link failure.
+     * @param requestBody JSON string with source/target parameters
+     * @return JSON response string with action status
+     */
+    std::string HandlePostInjectLinkFailure(const std::string& requestBody);
+
+    /**
+     * @brief Injects a link failure between two nodes into RoutingEngine.
+     */
+    bool InjectLinkFailure(const std::string& srcNodeId, const std::string& destNodeId, bool bidirectional = true);
+
+    /**
+     * @brief REST Handler POST /api/inject/link-restore
+     *        Restores a previously severed ISL/feeder link.
+     */
+    std::string HandlePostRestoreLink(const std::string& requestBody);
+
+    /**
+     * @brief Restores a link between two nodes in RoutingEngine.
+     */
+    bool RestoreLink(const std::string& srcNodeId, const std::string& destNodeId, bool bidirectional = true);
 
 private:
     Core::SimulationController* m_controller{nullptr};

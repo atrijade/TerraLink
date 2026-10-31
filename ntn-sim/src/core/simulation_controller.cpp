@@ -84,6 +84,11 @@ void SimulationController::StopSimulation() {
     m_isRunning = false;
 }
 
+bool SimulationController::IsSimulationRunning() const {
+    return m_isRunning;
+
+}
+
 EventScheduler* SimulationController::GetScheduler() const { return m_scheduler.get(); }
 Orbit::OrbitEngine* SimulationController::GetOrbitEngine() const { return m_orbitEngine.get(); }
 User::UserEngine* SimulationController::GetUserEngine() const { return m_userEngine.get(); }

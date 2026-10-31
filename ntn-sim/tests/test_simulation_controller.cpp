@@ -251,3 +251,106 @@ TEST(RestApiTest, EmbeddedServer_HttpRequests) {
     EXPECT_FALSE(api->IsRunning());
 }
 
+TEST(RestApiTest, LinkFailureInjection_DirectAndJsonHandler) {
+    NtnSim::Core::SimulationController controller;
+    controller.InitializeEngines();
+
+    auto* routing = controller.GetRoutingEngine();
+    ASSERT_NE(routing, nullptr);
+
+    // Add a test link between sat-1 and sat-2
+    routing->AddLink("sat-1", "sat-2", 1000000.0, false, 10e9, true);
+    auto linkOpt = routing->GetLink("sat-1", "sat-2");
+    ASSERT_TRUE(linkOpt.has_value());
+    EXPECT_TRUE(linkOpt->isActive);
+
+    auto* api = controller.GetRestApi();
+    ASSERT_NE(api, nullptr);
+
+    // 1. Direct failure injection
+    bool okFail = api->InjectLinkFailure("sat-1", "sat-2", true);
+    EXPECT_TRUE(okFail);
+    linkOpt = routing->GetLink("sat-1", "sat-2");
+    ASSERT_TRUE(linkOpt.has_value());
+    EXPECT_FALSE(linkOpt->isActive);
+
+    // 2. Direct link restoration
+    bool okRestore = api->RestoreLink("sat-1", "sat-2", true);
+    EXPECT_TRUE(okRestore);
+    linkOpt = routing->GetLink("sat-1", "sat-2");
+    ASSERT_TRUE(linkOpt.has_value());
+    EXPECT_TRUE(linkOpt->isActive);
+
+    // 3. Test HandlePostInjectLinkFailure JSON handler
+    std::string failJson = api->HandlePostInjectLinkFailure(
+        "{\"source\":\"sat-1\",\"target\":\"sat-2\",\"bidirectional\":true}"
+    );
+    EXPECT_NE(failJson.find("\"success\":true"), std::string::npos);
+    EXPECT_NE(failJson.find("\"action\":\"LINK_FAILURE_INJECTED\""), std::string::npos);
+    linkOpt = routing->GetLink("sat-1", "sat-2");
+    ASSERT_TRUE(linkOpt.has_value());
+    EXPECT_FALSE(linkOpt->isActive);
+
+    // 4. Test HandlePostRestoreLink JSON handler
+    std::string restoreJson = api->HandlePostRestoreLink(
+        "{\"source\":\"sat-1\",\"target\":\"sat-2\"}"
+    );
+    EXPECT_NE(restoreJson.find("\"success\":true"), std::string::npos);
+    EXPECT_NE(restoreJson.find("\"action\":\"LINK_RESTORED\""), std::string::npos);
+    linkOpt = routing->GetLink("sat-1", "sat-2");
+    ASSERT_TRUE(linkOpt.has_value());
+    EXPECT_TRUE(linkOpt->isActive);
+
+    // 5. Missing params handling
+    std::string badJson = api->HandlePostInjectLinkFailure("{\"badKey\":\"none\"}");
+    EXPECT_NE(badJson.find("\"success\":false"), std::string::npos);
+}
+
+TEST(RestApiTest, EmbeddedServer_LinkFailureRouteOverHttp) {
+    NtnSim::Core::SimulationController controller;
+    controller.InitializeEngines();
+
+    auto* routing = controller.GetRoutingEngine();
+    ASSERT_NE(routing, nullptr);
+    routing->AddLink("sat-alpha", "sat-beta", 1500000.0, false, 10e9, true);
+
+    auto* api = controller.GetRestApi();
+    ASSERT_NE(api, nullptr);
+
+    bool started = api->StartServer(18083);
+    ASSERT_TRUE(started);
+    EXPECT_TRUE(api->IsRunning());
+
+    httplib::Client cli("127.0.0.1", 18083);
+    cli.set_connection_timeout(2, 0);
+    cli.set_read_timeout(2, 0);
+
+    // 1. POST /api/inject/link-failure
+    std::string failPayload = "{\"source\":\"sat-alpha\",\"target\":\"sat-beta\",\"bidirectional\":true}";
+    auto resFail = cli.Post("/api/inject/link-failure", failPayload, "application/json");
+    ASSERT_TRUE(resFail != nullptr);
+    EXPECT_EQ(resFail->status, 200);
+    EXPECT_NE(resFail->body.find("\"success\":true"), std::string::npos);
+    EXPECT_NE(resFail->body.find("LINK_FAILURE_INJECTED"), std::string::npos);
+
+    // Verify RoutingEngine state was updated
+    auto linkOpt = routing->GetLink("sat-alpha", "sat-beta");
+    ASSERT_TRUE(linkOpt.has_value());
+    EXPECT_FALSE(linkOpt->isActive);
+
+    // 2. POST /api/inject/link-restore
+    std::string restorePayload = "{\"source\":\"sat-alpha\",\"target\":\"sat-beta\"}";
+    auto resRestore = cli.Post("/api/inject/link-restore", restorePayload, "application/json");
+    ASSERT_TRUE(resRestore != nullptr);
+    EXPECT_EQ(resRestore->status, 200);
+    EXPECT_NE(resRestore->body.find("\"success\":true"), std::string::npos);
+    EXPECT_NE(resRestore->body.find("LINK_RESTORED"), std::string::npos);
+
+    linkOpt = routing->GetLink("sat-alpha", "sat-beta");
+    ASSERT_TRUE(linkOpt.has_value());
+    EXPECT_TRUE(linkOpt->isActive);
+
+    api->StopServer();
+    EXPECT_FALSE(api->IsRunning());
+}
+
