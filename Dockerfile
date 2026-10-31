@@ -1,7 +1,7 @@
 # ==============================================================================
 # Stage 1: Build the React + Cesium Web UI
 # ==============================================================================
-FROM node:20-bullseye-slim AS frontend-builder
+FROM node:22-bookworm-slim AS frontend-builder
 WORKDIR /app/web-ui
 
 # Install frontend dependencies
@@ -22,9 +22,11 @@ WORKDIR /app
 # Copy C++ source code
 COPY ntn-sim/ ./ntn-sim/
 
-# Configure and compile release binary using Ninja
+# Configure and compile release binary statically linking libstdc++
 WORKDIR /app/build
-RUN cmake -DCMAKE_BUILD_TYPE=Release -G Ninja ../ntn-sim
+RUN cmake -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
+          -G Ninja ../ntn-sim
 RUN ninja ntn_sim_bin
 
 # ==============================================================================
@@ -33,10 +35,10 @@ RUN ninja ntn_sim_bin
 FROM debian:bookworm-slim
 WORKDIR /app
 
-# Install standard C++ runtime libraries
-RUN apt-get update && apt-get install -y libstdc++6 ca-certificates --no-install-recommends && rm -rf /var/lib/apt/lists/*
+# Install standard runtime packages
+RUN apt-get update && apt-get install -y ca-certificates --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
-# Copy compiled C++ binary, config files, and datasets
+# Copy compiled standalone C++ binary, config files, and datasets
 COPY --from=backend-builder /app/build/ntn_sim_bin /app/ntn_sim_bin
 COPY --from=backend-builder /app/ntn-sim/config /app/config
 COPY --from=backend-builder /app/ntn-sim/datasets /app/datasets
