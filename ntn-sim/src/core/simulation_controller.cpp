@@ -54,6 +54,15 @@ void SimulationController::InitializeEngines() {
     m_handoverEngine->SetMetricsEngine(m_metricsEngine.get());
     m_packetEngine->SetRoutingEngine(m_routingEngine.get());
     m_packetEngine->RegisterGateway(m_gateway.get());
+    // 1. Generate Walker Constellation: 4 planes x 6 sats = 24 satellites at 600km altitude
+    const int numPlanes = 4;
+    const int satsPerPlane = 6;
+    m_orbitEngine->GenerateWalkerConstellation(numPlanes, satsPerPlane, 600.0, 53.0);
+    // 2. Build 4-ISL mesh topology connecting adjacent satellites
+    m_routingEngine->BuildConstellationTopology(
+        m_orbitEngine->GetAllSatellites(), numPlanes, satsPerPlane);
+    // 3. Connect ground gateway to the first overhead satellite
+    m_gateway->ConnectSatellite("sat-p0-s0");
 }
 
 void SimulationController::StartSimulation() {

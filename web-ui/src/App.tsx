@@ -4,6 +4,7 @@ import { GlobeViewer } from './components/globe/GlobeViewer';
 import { TopHeaderHud } from './components/dashboard/TopHeaderHud';
 import { TelemetryDashboard } from './components/dashboard/TelemetryDashboard';
 import { FaultInjectionPanel } from './components/controls/FaultInjectionPanel';
+import { BackendOfflineModal } from './components/common/BackendOfflineModal';
 
 export const App: React.FC = () => {
   const [pollIntervalMs, setPollIntervalMs] = useState<number>(600);
@@ -19,6 +20,9 @@ export const App: React.FC = () => {
     metricHistory,
     selectedEntityId,
     setSelectedEntityId,
+    isBackendOnline,
+    backendError,
+    fetchAll,
     startSimulation,
     stopSimulation,
     injectLinkFailure,
@@ -161,6 +165,11 @@ export const App: React.FC = () => {
 
       {/* 3. Real-Time Telemetry HUD & Analytics (KPI Cards + Recharts) */}
       <TelemetryDashboard metrics={metrics} history={metricHistory} />
+
+      {/* 4. Backend Offline Warning Modal */}
+      {!isBackendOnline && (
+        <BackendOfflineModal error={backendError} onRetry={fetchAll} />
+      )}
     </div>
   );
 };

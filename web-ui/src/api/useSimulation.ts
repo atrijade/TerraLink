@@ -26,14 +26,16 @@ export function useSimulation(pollIntervalMs: number = 750) {
   const [users, setUsers] = useState<User[]>([]);
   const [metrics, setMetrics] = useState<SimulationMetrics | null>(null);
   const [status, setStatus] = useState<ServerStatus>({
-    status: 'RUNNING',
+    status: 'OFFLINE',
     port: 8080,
-    controllerConnected: true,
-    isMockMode: true,
+    controllerConnected: false,
+    isMockMode: false,
   });
   const [metricHistory, setMetricHistory] = useState<MetricHistoryPoint[]>([]);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isBackendOnline, setIsBackendOnline] = useState<boolean>(true);
+  const [backendError, setBackendError] = useState<string | null>(null);
 
   const isPollingRef = useRef<boolean>(false);
 
@@ -58,6 +60,8 @@ export function useSimulation(pollIntervalMs: number = 750) {
       setUsers(userData);
       setMetrics(metricsData);
       setStatus(statusData);
+      setIsBackendOnline(true);
+      setBackendError(null);
 
       if (metricsData && metricsData.traffic) {
         const point: MetricHistoryPoint = {
@@ -75,8 +79,16 @@ export function useSimulation(pollIntervalMs: number = 750) {
           return next.length > 25 ? next.slice(next.length - 25) : next;
         });
       }
-    } catch (err) {
-      console.warn('Error fetching simulation telemetry:', err);
+    } catch (err: unknown) {
+      setIsBackendOnline(false);
+      setStatus({
+        status: 'OFFLINE',
+        port: 8080,
+        controllerConnected: false,
+        isMockMode: false,
+      });
+      const message = err instanceof Error ? err.message : 'Connection failed';
+      setBackendError(`Unable to connect to NTN-Sim C++ Backend (Port 8080): ${message}`);
     } finally {
       setIsLoading(false);
       isPollingRef.current = false;
@@ -122,6 +134,8 @@ export function useSimulation(pollIntervalMs: number = 750) {
     selectedEntityId,
     setSelectedEntityId,
     isLoading,
+    isBackendOnline,
+    backendError,
     fetchAll,
     startSimulation: handleStart,
     stopSimulation: handleStop,
