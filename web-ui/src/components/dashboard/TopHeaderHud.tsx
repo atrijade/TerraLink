@@ -8,6 +8,7 @@ import {
   Square,
   Clock,
   Zap,
+  ShieldAlert,
 } from 'lucide-react';
 import type { ServerStatus } from '../../api/types';
 
@@ -19,6 +20,9 @@ interface TopHeaderHudProps {
   totalIslCount: number;
   gatewaysCount: number;
   usersCount: number;
+  hasFailedLinks: boolean;
+  isFaultPanelOpen: boolean;
+  onToggleFaultPanel: () => void;
   onStartSimulation: () => void;
   onStopSimulation: () => void;
 }
@@ -31,6 +35,9 @@ export const TopHeaderHud: React.FC<TopHeaderHudProps> = ({
   totalIslCount,
   gatewaysCount,
   usersCount,
+  hasFailedLinks,
+  isFaultPanelOpen,
+  onToggleFaultPanel,
   onStartSimulation,
   onStopSimulation,
 }) => {
@@ -115,8 +122,8 @@ export const TopHeaderHud: React.FC<TopHeaderHudProps> = ({
         </div>
       </div>
 
-      {/* Center/Right: Active Node Counters */}
-      <div className="hidden lg:flex items-center gap-4 bg-slate-900/90 backdrop-blur-md border border-slate-700/70 rounded-xl px-5 py-2.5 shadow-2xl pointer-events-auto">
+      {/* Center/Right: Active Node Counters & Fault Injection Trigger */}
+      <div className="hidden lg:flex items-center gap-3.5 bg-slate-900/90 backdrop-blur-md border border-slate-700/70 rounded-xl px-4 py-2 shadow-2xl pointer-events-auto">
         {/* Satellites */}
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded-md bg-cyan-950/80 text-cyan-400 border border-cyan-800/50">
@@ -178,7 +185,7 @@ export const TopHeaderHud: React.FC<TopHeaderHudProps> = ({
           </div>
           <div>
             <div className="text-[10px] uppercase tracking-wider text-slate-400">
-              User UEs
+              Users
             </div>
             <div className="text-xs font-bold text-purple-300 font-mono">
               {usersCount}
@@ -186,12 +193,25 @@ export const TopHeaderHud: React.FC<TopHeaderHudProps> = ({
           </div>
         </div>
 
-        {/* Source Mode */}
-        {status.isMockMode && (
-          <div className="ml-2 px-2 py-0.5 rounded bg-cyan-950/90 text-cyan-300 border border-cyan-800/60 text-[10px] font-semibold tracking-wider">
-            MOCK TELEMETRY
-          </div>
-        )}
+        <div className="h-5 w-px bg-slate-700/80" />
+
+        {/* Fault Injection Button */}
+        <button
+          onClick={onToggleFaultPanel}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition cursor-pointer ${
+            hasFailedLinks
+              ? 'bg-rose-950/80 text-rose-300 border-rose-800/80 shadow-lg shadow-rose-950/50'
+              : isFaultPanelOpen
+              ? 'bg-cyan-950 text-cyan-300 border-cyan-800/80'
+              : 'bg-slate-800/90 text-slate-300 border-slate-700/60 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <ShieldAlert size={14} className={hasFailedLinks ? 'text-rose-400' : 'text-cyan-400'} />
+          <span>Fault Injection</span>
+          {hasFailedLinks && (
+            <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+          )}
+        </button>
       </div>
     </header>
   );

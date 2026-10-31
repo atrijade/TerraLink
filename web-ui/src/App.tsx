@@ -1,10 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useSimulation } from './api/useSimulation';
 import { GlobeViewer } from './components/globe/GlobeViewer';
 import { TopHeaderHud } from './components/dashboard/TopHeaderHud';
 import { TelemetryDashboard } from './components/dashboard/TelemetryDashboard';
+import { FaultInjectionPanel } from './components/controls/FaultInjectionPanel';
 
 export const App: React.FC = () => {
+  const [pollIntervalMs, setPollIntervalMs] = useState<number>(600);
+  const [isFaultPanelOpen, setIsFaultPanelOpen] = useState<boolean>(false);
+
   const {
     satellites,
     topology,
@@ -17,13 +21,16 @@ export const App: React.FC = () => {
     setSelectedEntityId,
     startSimulation,
     stopSimulation,
-  } = useSimulation(600);
+    injectLinkFailure,
+    restoreLink,
+  } = useSimulation(pollIntervalMs);
 
   const activeIsls = topology.filter((l) => l.active).length;
+  const hasFailedLinks = topology.some((l) => !l.active || l.status === 'FAILED');
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-slate-950 flex flex-col font-sans select-none">
-      {/* 1. Top Header HUD with Branding, Status, Active Node Counts & Sim Controls */}
+      {/* 1. Top Header HUD with Branding, Status, Active Node Counts & Controls */}
       <TopHeaderHud
         status={status}
         simTime={metrics?.simTime || 0}
@@ -32,6 +39,9 @@ export const App: React.FC = () => {
         totalIslCount={topology.length}
         gatewaysCount={gateways.length}
         usersCount={users.length}
+        hasFailedLinks={hasFailedLinks}
+        isFaultPanelOpen={isFaultPanelOpen}
+        onToggleFaultPanel={() => setIsFaultPanelOpen((prev) => !prev)}
         onStartSimulation={startSimulation}
         onStopSimulation={stopSimulation}
       />
@@ -49,7 +59,7 @@ export const App: React.FC = () => {
 
         {/* Selected Entity Card Inspector */}
         {selectedEntityId && (
-          <div className="absolute top-20 left-4 z-20 bg-slate-900/90 backdrop-blur-md border border-cyan-800/60 rounded-xl p-4 shadow-2xl w-80 text-xs text-slate-200">
+          <div className="absolute top-20 left-4 z-20 bg-slate-900/90 backdrop-blur-md border border-cyan-800/60 rounded-xl p-4 shadow-2xl w-80 text-xs text-slate-200 animate-in fade-in zoom-in-95 duration-100">
             <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-700/60">
               <span className="font-bold text-cyan-400 text-sm">
                 {selectedEntityId}
@@ -91,6 +101,14 @@ export const App: React.FC = () => {
                         <span className="text-slate-400">Orbital Velocity:</span>
                         <span className="font-mono text-emerald-300">7.56 km/s</span>
                       </div>
+                      <div className="pt-2 border-t border-slate-800">
+                        <button
+                          onClick={() => setIsFaultPanelOpen(true)}
+                          className="w-full py-1 px-2 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded text-center font-medium transition cursor-pointer"
+                        >
+                          Configure ISL Links
+                        </button>
+                      </div>
                     </>
                   );
                 })()}
@@ -116,6 +134,10 @@ export const App: React.FC = () => {
                         <span className="text-slate-400">Avg Feeder Delay:</span>
                         <span className="font-mono text-cyan-300">{gw.avgLatencyMs.toFixed(1)} ms</span>
                       </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Packets Received:</span>
+                        <span className="font-mono text-emerald-300">{gw.packetsReceived.toLocaleString()}</span>
+                      </div>
                     </>
                   );
                 })()}
@@ -123,6 +145,18 @@ export const App: React.FC = () => {
             )}
           </div>
         )}
+
+        {/* Fault Injection & Operator Control Drawer */}
+        <FaultInjectionPanel
+          satellites={satellites}
+          topology={topology}
+          onInjectFailure={injectLinkFailure}
+          onRestoreLink={restoreLink}
+          isOpen={isFaultPanelOpen}
+          onClose={() => setIsFaultPanelOpen(false)}
+          pollIntervalMs={pollIntervalMs}
+          onSetPollInterval={setPollIntervalMs}
+        />
       </main>
 
       {/* 3. Real-Time Telemetry HUD & Analytics (KPI Cards + Recharts) */}

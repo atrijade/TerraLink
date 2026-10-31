@@ -72,18 +72,12 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Use dark CartoDB basemap imagery with OSM fallback
-    let baseLayer: Cesium.ImageryLayer | false = false;
-    try {
-      baseLayer = new Cesium.ImageryLayer(
-        new Cesium.UrlTemplateImageryProvider({
-          url: 'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-          credit: 'CartoDB / OpenStreetMap',
-        })
-      );
-    } catch {
-      baseLayer = false;
-    }
+    // Use bundled NaturalEarthII imagery (100% keyless, offline-capable, no watermarks)
+    const baseLayer = Cesium.ImageryLayer.fromProviderAsync(
+      Cesium.TileMapServiceImageryProvider.fromUrl(
+        Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII')
+      )
+    );
 
     const viewer = new Cesium.Viewer(containerRef.current, {
       animation: false,
