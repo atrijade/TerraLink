@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <memory>
+#include <atomic>
 
 namespace NtnSim::Core {
 class SimulationController;
@@ -44,12 +46,21 @@ namespace NtnSim::Api {
 /**
  * @brief REST API server component to monitor and control the simulation run.
  *        Wired with the central SimulationController to access all core engines.
+ *        Embeds a lightweight cpp-httplib HTTP server running in a worker thread.
  */
 class RestApi {
 public:
     RestApi();
     explicit RestApi(Core::SimulationController* controller);
     ~RestApi();
+
+    // Non-copyable (due to server thread and unique_ptr)
+    RestApi(const RestApi&) = delete;
+    RestApi& operator=(const RestApi&) = delete;
+
+    // Movable
+    RestApi(RestApi&&) noexcept;
+    RestApi& operator=(RestApi&&) noexcept;
 
     /**
      * @brief Injects the central SimulationController instance.
@@ -69,12 +80,13 @@ public:
     Packet::PacketEngine* GetPacketEngine() const;
 
     /**
-     * @brief Starts the REST API listening server on a specified port.
+     * @brief Starts the REST API listening server on a specified port (default 8080).
+     *        Binds HTTP routes to JSON handler methods and listens on 0.0.0.0 in a worker thread.
      */
-    bool StartServer(int port);
+    bool StartServer(int port = 8080);
 
     /**
-     * @brief Stops the REST API listening server.
+     * @brief Stops the REST API listening server and joins the worker thread.
      */
     void StopServer();
 
@@ -82,7 +94,7 @@ public:
     int GetPort() const;
 
     // =========================================================================
-    // Step 2: REST JSON State Serializers
+    // REST JSON State Serializers
     // =========================================================================
 
     /**
@@ -127,8 +139,11 @@ public:
 
 private:
     Core::SimulationController* m_controller{nullptr};
-    bool m_isRunning{false};
+    std::atomic<bool> m_isRunning{false};
     int m_port{8080};
+
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
 };
 
 } // namespace NtnSim::Api

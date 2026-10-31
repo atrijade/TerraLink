@@ -18,8 +18,10 @@ endif()
 # Directories
 set(INC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
+set(VENDOR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
 
 include_directories(${INC_DIR})
+include_directories(SYSTEM ${VENDOR_DIR})
 
 # Source files list grouped by module
 set(SOURCES
@@ -138,6 +140,11 @@ set(HEADERS
 # Core Simulator Library
 add_library(ntn_sim_lib STATIC ${SOURCES} ${HEADERS})
 target_include_directories(ntn_sim_lib PUBLIC ${INC_DIR})
+target_include_directories(ntn_sim_lib SYSTEM PUBLIC ${VENDOR_DIR})
+
+if(WIN32)
+    target_link_libraries(ntn_sim_lib PUBLIC ws2_32 crypt32)
+endif()
 
 # Main Binary
 add_executable(ntn_sim_bin ${SRC_DIR}/main.cpp)

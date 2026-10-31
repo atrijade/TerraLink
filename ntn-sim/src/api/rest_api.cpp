@@ -14,18 +14,77 @@
 #include "ntn-sim/packet/packet_engine.h"
 #include "ntn-sim/utils/math_utils.h"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+
+#include "httplib.h"
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+#ifdef GetCurrentTime
+#undef GetCurrentTime
+#endif
+
 #include <sstream>
 #include <iomanip>
 #include <vector>
+#include <thread>
+#include <chrono>
 
 namespace NtnSim::Api {
 
-RestApi::RestApi() : m_controller(nullptr) {}
+struct RestApi::Impl {
+    httplib::Server server;
+    std::thread workerThread;
+};
 
-RestApi::RestApi(Core::SimulationController* controller) : m_controller(controller) {}
+RestApi::RestApi()
+    : m_controller(nullptr), m_isRunning(false), m_port(8080), m_impl(std::make_unique<Impl>()) {}
+
+RestApi::RestApi(Core::SimulationController* controller)
+    : m_controller(controller), m_isRunning(false), m_port(8080), m_impl(std::make_unique<Impl>()) {}
 
 RestApi::~RestApi() {
     StopServer();
+}
+
+RestApi::RestApi(RestApi&& other) noexcept
+    : m_controller(other.m_controller),
+      m_isRunning(other.m_isRunning.load()),
+      m_port(other.m_port),
+      m_impl(std::move(other.m_impl)) {
+    other.m_controller = nullptr;
+    other.m_isRunning.store(false);
+}
+
+RestApi& RestApi::operator=(RestApi&& other) noexcept {
+    if (this != &other) {
+        StopServer();
+        m_controller = other.m_controller;
+        m_isRunning.store(other.m_isRunning.load());
+        m_port = other.m_port;
+        m_impl = std::move(other.m_impl);
+        other.m_controller = nullptr;
+        other.m_isRunning.store(false);
+    }
+    return *this;
 }
 
 void RestApi::SetSimulationController(Core::SimulationController* controller) {
@@ -73,7 +132,7 @@ Packet::PacketEngine* RestApi::GetPacketEngine() const {
 }
 
 bool RestApi::IsRunning() const {
-    return m_isRunning;
+    return m_isRunning.load();
 }
 
 int RestApi::GetPort() const {
@@ -81,13 +140,103 @@ int RestApi::GetPort() const {
 }
 
 bool RestApi::StartServer(int port) {
+    if (m_isRunning.load()) {
+        StopServer();
+    }
+
     m_port = port;
-    m_isRunning = true;
-    return true;
+    m_impl = std::make_unique<Impl>();
+
+    // 1. CORS headers configuration for web dashboards and visualization clients
+    m_impl->server.set_default_headers({
+        {"Access-Control-Allow-Origin", "*"},
+        {"Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"},
+        {"Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With"}
+    });
+
+    m_impl->server.Options(".*", [](const httplib::Request&, httplib::Response& res) {
+        res.status = 200;
+        res.set_content("", "text/plain");
+    });
+
+    // 2. Bind GET telemetry and state routes (support both root path and /api/ prefix)
+    auto bindGetHandler = [this](const std::string& path, auto handlerFunc) {
+        auto cb = [this, handlerFunc](const httplib::Request&, httplib::Response& res) {
+            res.set_content((this->*handlerFunc)(), "application/json");
+        };
+        m_impl->server.Get(path, cb);
+        m_impl->server.Get("/api" + path, cb);
+    };
+
+    bindGetHandler("/satellites", &RestApi::HandleGetSatellites);
+    bindGetHandler("/topology", &RestApi::HandleGetTopology);
+    bindGetHandler("/gateways", &RestApi::HandleGetGateways);
+    bindGetHandler("/users", &RestApi::HandleGetUsers);
+    bindGetHandler("/metrics", &RestApi::HandleGetMetrics);
+
+    // Health and server status routes
+    auto statusCb = [this](const httplib::Request&, httplib::Response& res) {
+        std::ostringstream ss;
+        ss << "{\n"
+           << "  \"status\": \"RUNNING\",\n"
+           << "  \"port\": " << m_port << ",\n"
+           << "  \"controllerConnected\": " << (m_controller ? "true" : "false") << "\n"
+           << "}";
+        res.set_content(ss.str(), "application/json");
+    };
+    m_impl->server.Get("/health", statusCb);
+    m_impl->server.Get("/api/health", statusCb);
+    m_impl->server.Get("/status", statusCb);
+    m_impl->server.Get("/api/status", statusCb);
+
+    // 3. Bind POST control routes
+    auto startCb = [this](const httplib::Request&, httplib::Response& res) {
+        bool ok = HandlePostStart();
+        std::ostringstream ss;
+        ss << "{\"success\": " << (ok ? "true" : "false") << ", \"status\": \"STARTED\"}";
+        res.set_content(ss.str(), "application/json");
+    };
+    m_impl->server.Post("/start", startCb);
+    m_impl->server.Post("/api/start", startCb);
+
+    auto stopCb = [this](const httplib::Request&, httplib::Response& res) {
+        bool ok = HandlePostStop();
+        std::ostringstream ss;
+        ss << "{\"success\": " << (ok ? "true" : "false") << ", \"status\": \"STOPPED\"}";
+        res.set_content(ss.str(), "application/json");
+    };
+    m_impl->server.Post("/stop", stopCb);
+    m_impl->server.Post("/api/stop", stopCb);
+
+    // 4. Start background worker thread listening on 0.0.0.0
+    m_impl->workerThread = std::thread([this, port]() {
+        m_impl->server.listen("0.0.0.0", port);
+    });
+
+    // Wait until server is listening or timeout (up to 1500ms)
+    auto startTime = std::chrono::steady_clock::now();
+    while (!m_impl->server.is_running()) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - startTime).count() > 1500) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    m_isRunning.store(m_impl->server.is_running());
+    return m_isRunning.load();
 }
 
 void RestApi::StopServer() {
-    m_isRunning = false;
+    if (m_impl) {
+        if (m_impl->server.is_running()) {
+            m_impl->server.stop();
+        }
+        if (m_impl->workerThread.joinable()) {
+            m_impl->workerThread.join();
+        }
+    }
+    m_isRunning.store(false);
 }
 
 // =========================================================================

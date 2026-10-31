@@ -10,6 +10,33 @@
 #include "ntn-sim/user/user_engine.h"
 #include "ntn-sim/user/user.h"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
+
+#include "httplib.h"
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+#ifdef GetCurrentTime
+#undef GetCurrentTime
+#endif
+
 TEST(SimulationControllerTest, InitialState) {
     NtnSim::Core::SimulationController controller;
     EXPECT_EQ(controller.GetScheduler(), nullptr);
@@ -165,3 +192,62 @@ TEST(RestApiTest, HandleGetMetrics_Serialization) {
     EXPECT_NE(json.find("\"totalSuccesses\":1"), std::string::npos);
     EXPECT_NE(json.find("\"radio\":{"), std::string::npos);
 }
+
+TEST(RestApiTest, EmbeddedServer_StartStopLifecycle) {
+    NtnSim::Api::RestApi api;
+    EXPECT_FALSE(api.IsRunning());
+
+    bool started = api.StartServer(18081);
+    EXPECT_TRUE(started);
+    EXPECT_TRUE(api.IsRunning());
+    EXPECT_EQ(api.GetPort(), 18081);
+
+    api.StopServer();
+    EXPECT_FALSE(api.IsRunning());
+}
+
+TEST(RestApiTest, EmbeddedServer_HttpRequests) {
+    NtnSim::Core::SimulationController controller;
+    controller.InitializeEngines();
+    controller.GetOrbitEngine()->GenerateWalkerConstellation(2, 2, 600.0, 53.0);
+
+    auto* api = controller.GetRestApi();
+    ASSERT_NE(api, nullptr);
+
+    bool started = api->StartServer(18082);
+    ASSERT_TRUE(started);
+    EXPECT_TRUE(api->IsRunning());
+
+    // Connect using httplib client
+    httplib::Client cli("127.0.0.1", 18082);
+    cli.set_connection_timeout(2, 0);
+    cli.set_read_timeout(2, 0);
+
+    // 1. GET /health
+    auto resHealth = cli.Get("/health");
+    ASSERT_TRUE(resHealth != nullptr);
+    EXPECT_EQ(resHealth->status, 200);
+    EXPECT_NE(resHealth->body.find("\"status\": \"RUNNING\""), std::string::npos);
+
+    // 2. GET /api/satellites
+    auto resSats = cli.Get("/api/satellites");
+    ASSERT_TRUE(resSats != nullptr);
+    EXPECT_EQ(resSats->status, 200);
+    EXPECT_NE(resSats->body.find("\"id\":\"sat-p0-s0\""), std::string::npos);
+
+    // 3. POST /api/start
+    auto resStart = cli.Post("/api/start");
+    ASSERT_TRUE(resStart != nullptr);
+    EXPECT_EQ(resStart->status, 200);
+    EXPECT_NE(resStart->body.find("\"status\": \"STARTED\""), std::string::npos);
+
+    // 4. POST /api/stop
+    auto resStop = cli.Post("/api/stop");
+    ASSERT_TRUE(resStop != nullptr);
+    EXPECT_EQ(resStop->status, 200);
+    EXPECT_NE(resStop->body.find("\"status\": \"STOPPED\""), std::string::npos);
+
+    api->StopServer();
+    EXPECT_FALSE(api->IsRunning());
+}
+
