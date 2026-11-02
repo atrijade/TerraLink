@@ -18,14 +18,17 @@ import {
   stopMockSimulation,
   injectMockLinkFailure,
   restoreMockLink,
+  setMockSpeedMultiplier,
+  getMockSpeedMultiplier,
+  resetMockSimulationTime,
+  isMockSimRunning,
 } from './mockData';
 
 class NtnClient {
   private baseUrl: string = '';
-  // Mock fallback is disabled per user request
   private enableMockFallback: boolean = false;
   private backendAvailable: boolean = true;
-  private lastMockTimeSec: number = 0;
+  private simRunning: boolean = true;
 
   constructor(baseUrl: string = '') {
     this.baseUrl = baseUrl;
@@ -43,9 +46,23 @@ class NtnClient {
     return this.backendAvailable;
   }
 
-  private getMockSimTime(): number {
-    this.lastMockTimeSec += 0.5;
-    return this.lastMockTimeSec;
+  public isSimulationRunning(): boolean {
+    if (this.enableMockFallback) {
+      return isMockSimRunning();
+    }
+    return this.simRunning;
+  }
+
+  public setSpeedMultiplier(multiplier: number): void {
+    setMockSpeedMultiplier(multiplier);
+  }
+
+  public getSpeedMultiplier(): number {
+    return getMockSpeedMultiplier();
+  }
+
+  public resetSimulationTime(): void {
+    resetMockSimulationTime();
   }
 
   private async request<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -88,8 +105,8 @@ class NtnClient {
       const data = await this.request<Satellite[]>('/satellites');
       return Array.isArray(data) ? data : [];
     } catch (err) {
-      if (this.enableMockFallback) {
-        return generateMockSatellites(this.getMockSimTime());
+      if (this.enableMockFallback || !this.backendAvailable) {
+        return generateMockSatellites();
       }
       throw err;
     }
@@ -100,8 +117,8 @@ class NtnClient {
       const data = await this.request<TopologyResponse>('/topology');
       return data && Array.isArray(data.links) ? data : { links: [] };
     } catch (err) {
-      if (this.enableMockFallback) {
-        const sats = generateMockSatellites(this.lastMockTimeSec);
+      if (this.enableMockFallback || !this.backendAvailable) {
+        const sats = generateMockSatellites();
         return generateMockTopology(sats);
       }
       throw err;
@@ -113,8 +130,8 @@ class NtnClient {
       const data = await this.request<Gateway[]>('/gateways');
       return Array.isArray(data) ? data : [];
     } catch (err) {
-      if (this.enableMockFallback) {
-        const sats = generateMockSatellites(this.lastMockTimeSec);
+      if (this.enableMockFallback || !this.backendAvailable) {
+        const sats = generateMockSatellites();
         return generateMockGateways(sats);
       }
       throw err;
@@ -126,8 +143,8 @@ class NtnClient {
       const data = await this.request<User[]>('/users');
       return Array.isArray(data) ? data : [];
     } catch (err) {
-      if (this.enableMockFallback) {
-        const sats = generateMockSatellites(this.lastMockTimeSec);
+      if (this.enableMockFallback || !this.backendAvailable) {
+        const sats = generateMockSatellites();
         return generateMockUsers(sats);
       }
       throw err;
@@ -138,7 +155,7 @@ class NtnClient {
     try {
       return await this.request<SimulationMetrics>('/metrics');
     } catch (err) {
-      if (this.enableMockFallback) {
+      if (this.enableMockFallback || !this.backendAvailable) {
         return generateMockMetrics();
       }
       throw err;
@@ -148,19 +165,18 @@ class NtnClient {
   public async fetchStatus(): Promise<ServerStatus> {
     try {
       const res = await this.request<ServerStatus>('/status');
+      this.simRunning = res.status === 'RUNNING';
       return {
         ...res,
         isMockMode: false,
       };
     } catch (err) {
-      if (this.enableMockFallback) {
-        return getMockStatus();
-      }
+      const mockStatus = getMockStatus();
+      this.simRunning = mockStatus.status === 'RUNNING';
       return {
-        status: 'OFFLINE',
-        port: 8080,
+        ...mockStatus,
         controllerConnected: false,
-        isMockMode: false,
+        isMockMode: true,
       };
     }
   }
@@ -170,22 +186,26 @@ class NtnClient {
   // =========================================================================
 
   public async startSimulation(): Promise<CommandResponse> {
+    this.simRunning = true;
+    startMockSimulation();
     try {
       return await this.request<CommandResponse>('/start', { method: 'POST' });
     } catch (err) {
-      if (this.enableMockFallback) {
-        return startMockSimulation();
+      if (this.enableMockFallback || !this.backendAvailable) {
+        return { success: true, status: 'STARTED' };
       }
       throw err;
     }
   }
 
   public async stopSimulation(): Promise<CommandResponse> {
+    this.simRunning = false;
+    stopMockSimulation();
     try {
       return await this.request<CommandResponse>('/stop', { method: 'POST' });
     } catch (err) {
-      if (this.enableMockFallback) {
-        return stopMockSimulation();
+      if (this.enableMockFallback || !this.backendAvailable) {
+        return { success: true, status: 'STOPPED' };
       }
       throw err;
     }

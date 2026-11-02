@@ -8,13 +8,21 @@ import type { MetricHistoryPoint } from '../../api/useSimulation';
 interface TelemetryDashboardProps {
   metrics: SimulationMetrics | null;
   history: MetricHistoryPoint[];
+  showKpis?: boolean;
+  showCharts?: boolean;
 }
 
 export const TelemetryDashboard: React.FC<TelemetryDashboardProps> = ({
   metrics,
   history,
+  showKpis = true,
+  showCharts = true,
 }) => {
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
+
+  if (!showKpis && !showCharts) {
+    return null;
+  }
 
   return (
     <aside className="absolute bottom-4 left-4 right-4 z-20 flex flex-col pointer-events-none">
@@ -35,14 +43,18 @@ export const TelemetryDashboard: React.FC<TelemetryDashboardProps> = ({
         {isExpanded && (
           <div className="flex flex-col lg:flex-row gap-2.5 w-full items-stretch">
             {/* KPI Summary Cards */}
-            <div className="flex-1">
-              <KpiCards metrics={metrics} />
-            </div>
+            {showKpis && (
+              <div className="flex-1">
+                <KpiCards metrics={metrics} />
+              </div>
+            )}
 
             {/* Recharts Live Stream Chart */}
-            <div className="w-full lg:w-[460px]">
-              <RealtimeChart history={history} />
-            </div>
+            {showCharts && (
+              <div className={showKpis ? "w-full lg:w-[460px]" : "w-full"}>
+                <RealtimeChart history={history} />
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -24,6 +24,8 @@ interface GlobeViewerProps {
   users: User[];
   selectedEntityId: string | null;
   onSelectEntity: (entityId: string | null) => void;
+  layers?: GlobeLayerState;
+  onToggleLayer?: (key: keyof GlobeLayerState) => void;
 }
 
 export const GlobeViewer: React.FC<GlobeViewerProps> = ({
@@ -33,6 +35,8 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
   users,
   selectedEntityId,
   onSelectEntity,
+  layers: externalLayers,
+  onToggleLayer: externalToggleLayer,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
@@ -54,7 +58,9 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
     orbits: [],
   });
 
-  const [layers, setLayers] = useState<GlobeLayerState>({
+  const [internalLayers, setInternalLayers] = useState<GlobeLayerState>({
+    showSatellites: true,
+    showLabels: true,
     showOrbits: true,
     showIsl: true,
     showFeeders: true,
@@ -62,9 +68,10 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
     showGroundStations: true,
   });
 
-  const toggleLayer = (key: keyof GlobeLayerState) => {
-    setLayers((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
+  const activeLayers = externalLayers || internalLayers;
+  const toggleLayer = externalToggleLayer || ((key: keyof GlobeLayerState) => {
+    setInternalLayers((prev) => ({ ...prev, [key]: !prev[key] }));
+  });
 
   // =========================================================================
   // Initialize Cesium Viewer
@@ -90,64 +97,58 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
       selectionIndicator: false,
       timeline: false,
       navigationHelpButton: false,
-      shouldAnimate: true,
       baseLayer: baseLayer,
+      skyAtmosphere: new Cesium.SkyAtmosphere(),
     });
 
     viewerRef.current = viewer;
 
-    // Configure scene styling for aerospace HUD
-    const scene = viewer.scene;
-    scene.globe.baseColor = Cesium.Color.fromCssColorString('#020617');
-    scene.globe.enableLighting = false;
-    scene.globe.showGroundAtmosphere = true;
-    scene.backgroundColor = Cesium.Color.fromCssColorString('#020617');
+    // Configure globe visual properties
+    viewer.scene.globe.enableLighting = true;
+    viewer.scene.globe.showGroundAtmosphere = true;
+    viewer.scene.screenSpaceCameraController.minimumZoomDistance = 300000; // 300 km
+    viewer.scene.screenSpaceCameraController.maximumZoomDistance = 40000000; // 40,000 km
 
-    if (scene.skyAtmosphere) {
-      scene.skyAtmosphere.show = true;
-    }
-
-    // Set initial orbital camera vantage point
-    viewer.camera.setView({
+    // Initial camera position overlooking global constellation
+    viewer.camera.flyTo({
       destination: Cesium.Cartesian3.fromDegrees(10.0, 30.0, 22000000.0),
-      orientation: {
-        heading: Cesium.Math.toRadians(0),
-        pitch: Cesium.Math.toRadians(-85),
-        roll: 0.0,
-      },
+      duration: 0.0,
     });
 
-    // Handle Click on 3D Entities
-    const handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
-    handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
-      const pickedObject = scene.pick(click.position);
-      if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.name) {
-        onSelectEntity(pickedObject.id.name);
-      } else {
-        onSelectEntity(null);
-      }
-    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    // Generate static Walker constellation orbital tracks
+    const orbitPlanes = 4;
+    for (let p = 0; p < orbitPlanes; p++) {
+      const raanDeg = p * (360.0 / orbitPlanes);
+      const trackPoints = generateOrbitalTrackPositions(raanDeg, 53.0, 600.0, 100);
 
-    // Orbital Plane Rings (draw 4 Walker orbital plane ribbons)
-    const orbitEntities: Cesium.Entity[] = [];
-    for (let p = 0; p < 4; p++) {
-      const raan = (p * 360.0) / 4.0;
-      const positions = generateOrbitalTrackPositions(53.0, raan, 600.0, 90);
-
-      const orbitRing = viewer.entities.add({
-        name: `Orbit_Plane_${p}`,
+      const orbitLine = viewer.entities.add({
+        name: `Orbit Plane ${p}`,
         polyline: {
-          positions: positions,
-          width: 1.5,
-          material: new Cesium.PolylineGlowMaterialProperty({
-            glowPower: 0.1,
-            color: Cesium.Color.fromCssColorString('rgba(56, 189, 248, 0.25)'),
+          positions: trackPoints,
+          width: 1.2,
+          material: new Cesium.PolylineDashMaterialProperty({
+            color: Cesium.Color.fromCssColorString('rgba(250, 204, 21, 0.45)'),
+            dashLength: 12.0,
           }),
         },
       });
-      orbitEntities.push(orbitRing);
+      entitiesRef.current.orbits.push(orbitLine);
     }
-    entitiesRef.current.orbits = orbitEntities;
+
+    // Entity click handler
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction((click: { position: Cesium.Cartesian2 }) => {
+      const pickedObject = viewer.scene.pick(click.position);
+      if (Cesium.defined(pickedObject) && pickedObject.id) {
+        const id = pickedObject.id.name || pickedObject.id.id;
+        if (id) {
+          const cleanId = id.replace(/^(sat_|gw_|ue_)/, '');
+          onSelectEntity(cleanId);
+          return;
+        }
+      }
+      onSelectEntity(null);
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
     return () => {
       handler.destroy();
@@ -160,34 +161,42 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
   // Layer Visibility Updates
   // =========================================================================
   useEffect(() => {
+    // Satellites and Labels
+    entitiesRef.current.satellites.forEach((e) => {
+      e.show = activeLayers.showSatellites;
+      if (e.label) {
+        e.label.show = new Cesium.ConstantProperty(activeLayers.showLabels);
+      }
+    });
+
     // Orbits
     entitiesRef.current.orbits.forEach((e) => {
-      e.show = layers.showOrbits;
+      e.show = activeLayers.showOrbits;
     });
 
     // ISL Links
     entitiesRef.current.links.forEach((e) => {
-      e.show = layers.showIsl;
+      e.show = activeLayers.showIsl;
     });
 
     // Feeders
     entitiesRef.current.feeders.forEach((e) => {
-      e.show = layers.showFeeders;
+      e.show = activeLayers.showFeeders;
     });
 
     // Access
     entitiesRef.current.access.forEach((e) => {
-      e.show = layers.showAccess;
+      e.show = activeLayers.showAccess;
     });
 
     // Gateways and Users
     entitiesRef.current.gateways.forEach((e) => {
-      e.show = layers.showGroundStations;
+      e.show = activeLayers.showGroundStations;
     });
     entitiesRef.current.users.forEach((e) => {
-      e.show = layers.showGroundStations;
+      e.show = activeLayers.showGroundStations;
     });
-  }, [layers]);
+  }, [activeLayers]);
 
   // =========================================================================
   // Update Satellites Layer
@@ -215,6 +224,7 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
         entity = viewer.entities.add({
           id: `sat_${sat.id}`,
           name: sat.id,
+          show: activeLayers.showSatellites,
           position: pos,
           point: {
             pixelSize: isSelected ? 11 : 7,
@@ -226,6 +236,7 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
           },
           label: {
             text: sat.id,
+            show: activeLayers.showLabels,
             font: '10px monospace',
             fillColor: Cesium.Color.WHITE,
             showBackground: true,
@@ -238,6 +249,10 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
       } else {
         // Smoothly update position
         entity.position = new Cesium.ConstantPositionProperty(pos);
+        entity.show = activeLayers.showSatellites;
+        if (entity.label) {
+          entity.label.show = new Cesium.ConstantProperty(activeLayers.showLabels);
+        }
         if (entity.point) {
           entity.point.pixelSize = new Cesium.ConstantProperty(isSelected ? 11 : 7);
           entity.point.color = new Cesium.ConstantProperty(
@@ -254,7 +269,7 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
         satEntityMap.delete(id);
       }
     }
-  }, [satellites, selectedEntityId]);
+  }, [satellites, selectedEntityId, activeLayers.showSatellites, activeLayers.showLabels]);
 
   // =========================================================================
   // Update Topology ISL Links Layer
@@ -263,28 +278,33 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
     const viewer = viewerRef.current;
     if (!viewer) return;
 
-    const linkEntityMap = entitiesRef.current.links;
-    const currentLinkIds = new Set<string>();
+    const satMap = new Map<string, Satellite>();
+    satellites.forEach((s) => satMap.set(s.id, s));
 
-    const satPosMap = new Map<string, Cesium.Cartesian3>();
-    for (const sat of satellites) {
-      if (sat.ecef && (sat.ecef.x !== 0 || sat.ecef.y !== 0 || sat.ecef.z !== 0)) {
-        satPosMap.set(sat.id, ecefToCartesian(sat.ecef));
-      } else {
-        satPosMap.set(
-          sat.id,
-          geodeticToCartesian(sat.lat, sat.lon, sat.altKm || sat.altitudeKm || 600.0)
-        );
-      }
-    }
+    const linkEntityMap = entitiesRef.current.links;
+    const currentLinkKeys = new Set<string>();
 
     for (const link of topology) {
-      const srcPos = satPosMap.get(link.src);
-      const dstPos = satPosMap.get(link.dst);
-      if (!srcPos || !dstPos) continue;
+      const srcSat = satMap.get(link.src);
+      const dstSat = satMap.get(link.dst);
+      if (!srcSat || !dstSat) continue;
 
       const linkKey = [link.src, link.dst].sort().join('---');
-      currentLinkIds.add(linkKey);
+      currentLinkKeys.add(linkKey);
+
+      let p1: Cesium.Cartesian3;
+      if (srcSat.ecef && (srcSat.ecef.x !== 0 || srcSat.ecef.y !== 0)) {
+        p1 = ecefToCartesian(srcSat.ecef);
+      } else {
+        p1 = geodeticToCartesian(srcSat.lat, srcSat.lon, srcSat.altKm || srcSat.altitudeKm || 600.0);
+      }
+
+      let p2: Cesium.Cartesian3;
+      if (dstSat.ecef && (dstSat.ecef.x !== 0 || dstSat.ecef.y !== 0)) {
+        p2 = ecefToCartesian(dstSat.ecef);
+      } else {
+        p2 = geodeticToCartesian(dstSat.lat, dstSat.lon, dstSat.altKm || dstSat.altitudeKm || 600.0);
+      }
 
       const isFailed = !link.active || link.status === 'FAILED';
       const isSelected = selectedEntityId === link.src || selectedEntityId === link.dst;
@@ -292,209 +312,252 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
       let entity = linkEntityMap.get(linkKey);
       if (!entity) {
         entity = viewer.entities.add({
-          id: `isl_${linkKey}`,
-          name: `ISL: ${link.src} <-> ${link.dst}`,
+          id: `link_${linkKey}`,
+          name: `${link.src} <-> ${link.dst}`,
+          show: activeLayers.showIsl,
           polyline: {
-            positions: [srcPos, dstPos],
-            width: isFailed ? 2.5 : isSelected ? 2.5 : 1.5,
+            positions: [p1, p2],
+            width: isFailed ? 3 : isSelected ? 2.5 : 1.5,
             material: isFailed ? createFailedLinkMaterial() : createHealthyIslMaterial(),
+            arcType: Cesium.ArcType.NONE, // Straight laser beam
           },
-          show: layers.showIsl,
         });
         linkEntityMap.set(linkKey, entity);
       } else {
         if (entity.polyline) {
-          entity.polyline.positions = new Cesium.ConstantProperty([srcPos, dstPos]);
+          entity.polyline.positions = new Cesium.ConstantProperty([p1, p2]);
+          entity.polyline.width = new Cesium.ConstantProperty(
+            isFailed ? 3 : isSelected ? 2.5 : 1.5
+          );
           entity.polyline.material = isFailed
             ? createFailedLinkMaterial()
             : createHealthyIslMaterial();
-          entity.polyline.width = new Cesium.ConstantProperty(
-            isFailed ? 2.5 : isSelected ? 2.5 : 1.5
-          );
         }
       }
     }
 
     // Cleanup stale links
     for (const [key, entity] of linkEntityMap.entries()) {
-      if (!currentLinkIds.has(key)) {
+      if (!currentLinkKeys.has(key)) {
         viewer.entities.remove(entity);
         linkEntityMap.delete(key);
       }
     }
-  }, [topology, satellites, selectedEntityId, layers.showIsl]);
+  }, [topology, satellites, selectedEntityId, activeLayers.showIsl]);
 
   // =========================================================================
-  // Update Gateways & Feeder Links Layer
+  // Update Ground Gateways & Feeder Beams Layer
   // =========================================================================
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
 
-    const gwEntityMap = entitiesRef.current.gateways;
-    const feederEntityMap = entitiesRef.current.feeders;
-    const currentGwIds = new Set<string>();
+    const satMap = new Map<string, Satellite>();
+    satellites.forEach((s) => satMap.set(s.id, s));
 
-    const satPosMap = new Map<string, Cesium.Cartesian3>();
-    for (const sat of satellites) {
-      if (sat.ecef && (sat.ecef.x !== 0 || sat.ecef.y !== 0 || sat.ecef.z !== 0)) {
-        satPosMap.set(sat.id, ecefToCartesian(sat.ecef));
-      } else {
-        satPosMap.set(sat.id, geodeticToCartesian(sat.lat, sat.lon, sat.altKm || 600.0));
-      }
-    }
+    const gwMap = entitiesRef.current.gateways;
+    const feederMap = entitiesRef.current.feeders;
+    const currentGwIds = new Set<string>();
 
     for (const gw of gateways) {
       currentGwIds.add(gw.id);
-      const gwPos = geodeticToCartesian(gw.lat, gw.lon, gw.altM / 1000.0);
+      const isSelected = selectedEntityId === gw.id;
+      const gwPos = geodeticToCartesian(gw.lat, gw.lon, gw.altM || 50.0);
 
-      // 1. Gateway marker
-      let gwEntity = gwEntityMap.get(gw.id);
-      if (!gwEntity) {
-        gwEntity = viewer.entities.add({
+      // Gateway Pin
+      let entity = gwMap.get(gw.id);
+      if (!entity) {
+        entity = viewer.entities.add({
           id: `gw_${gw.id}`,
           name: gw.id,
+          show: activeLayers.showGroundStations,
           position: gwPos,
           point: {
-            pixelSize: 9,
-            color: Cesium.Color.fromCssColorString('#10b981'), // Emerald
+            pixelSize: isSelected ? 12 : 9,
+            color: Cesium.Color.fromCssColorString('#f59e0b'), // Amber
             outlineColor: Cesium.Color.WHITE,
-            outlineWidth: 1.5,
+            outlineWidth: 2,
           },
           label: {
-            text: `🛰️ ${gw.id}`,
-            font: '10px sans-serif',
-            fillColor: Cesium.Color.fromCssColorString('#6ee7b7'),
+            text: `GW: ${gw.id}`,
+            show: activeLayers.showLabels,
+            font: '10px monospace',
+            fillColor: Cesium.Color.fromCssColorString('#fbbf24'),
             showBackground: true,
-            backgroundColor: Cesium.Color.fromCssColorString('rgba(6, 78, 59, 0.8)'),
-            pixelOffset: new Cesium.Cartesian2(0, 14),
-            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 1.8e7),
+            backgroundColor: Cesium.Color.fromCssColorString('rgba(15, 23, 42, 0.85)'),
+            pixelOffset: new Cesium.Cartesian2(0, -14),
+            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 1.5e7),
           },
-          show: layers.showGroundStations,
         });
-        gwEntityMap.set(gw.id, gwEntity);
+        gwMap.set(gw.id, entity);
       } else {
-        gwEntity.position = new Cesium.ConstantPositionProperty(gwPos);
+        entity.position = new Cesium.ConstantPositionProperty(gwPos);
+        if (entity.label) {
+          entity.label.show = new Cesium.ConstantProperty(activeLayers.showLabels);
+        }
+        if (entity.point) {
+          entity.point.pixelSize = new Cesium.ConstantProperty(isSelected ? 12 : 9);
+        }
       }
 
-      // 2. Feeder Link to Connected Satellite
-      if (gw.connectedSat && satPosMap.has(gw.connectedSat)) {
-        const satPos = satPosMap.get(gw.connectedSat)!;
-        let feederEntity = feederEntityMap.get(gw.id);
+      // Feeder Link to Connected Satellite
+      if (gw.connectedSat && satMap.has(gw.connectedSat)) {
+        const sat = satMap.get(gw.connectedSat)!;
+        let satPos: Cesium.Cartesian3;
+        if (sat.ecef && (sat.ecef.x !== 0 || sat.ecef.y !== 0)) {
+          satPos = ecefToCartesian(sat.ecef);
+        } else {
+          satPos = geodeticToCartesian(sat.lat, sat.lon, sat.altKm || sat.altitudeKm || 600.0);
+        }
 
-        if (!feederEntity) {
-          feederEntity = viewer.entities.add({
+        let feeder = feederMap.get(gw.id);
+        if (!feeder) {
+          feeder = viewer.entities.add({
             id: `feeder_${gw.id}`,
             name: `Feeder: ${gw.id} -> ${gw.connectedSat}`,
+            show: activeLayers.showFeeders,
             polyline: {
               positions: [gwPos, satPos],
               width: 2.0,
               material: createFeederLinkMaterial(),
+              arcType: Cesium.ArcType.NONE,
             },
-            show: layers.showFeeders,
           });
-          feederEntityMap.set(gw.id, feederEntity);
+          feederMap.set(gw.id, feeder);
         } else {
-          if (feederEntity.polyline) {
-            feederEntity.polyline.positions = new Cesium.ConstantProperty([gwPos, satPos]);
+          if (feeder.polyline) {
+            feeder.polyline.positions = new Cesium.ConstantProperty([gwPos, satPos]);
           }
+        }
+      } else {
+        const feeder = feederMap.get(gw.id);
+        if (feeder) {
+          viewer.entities.remove(feeder);
+          feederMap.delete(gw.id);
         }
       }
     }
 
     // Cleanup stale gateways
-    for (const [id, entity] of gwEntityMap.entries()) {
+    for (const [id, entity] of gwMap.entries()) {
       if (!currentGwIds.has(id)) {
         viewer.entities.remove(entity);
-        gwEntityMap.delete(id);
+        gwMap.delete(id);
+        const feeder = feederMap.get(id);
+        if (feeder) {
+          viewer.entities.remove(feeder);
+          feederMap.delete(id);
+        }
       }
     }
-  }, [gateways, satellites, layers.showGroundStations, layers.showFeeders]);
+  }, [gateways, satellites, selectedEntityId, activeLayers.showGroundStations, activeLayers.showFeeders, activeLayers.showLabels]);
 
   // =========================================================================
-  // Update Users & Access Links Layer
+  // Update Ground User Terminals & Access Beams Layer
   // =========================================================================
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
 
-    const userEntityMap = entitiesRef.current.users;
-    const accessEntityMap = entitiesRef.current.access;
-    const currentUserIds = new Set<string>();
+    const satMap = new Map<string, Satellite>();
+    satellites.forEach((s) => satMap.set(s.id, s));
 
-    const satPosMap = new Map<string, Cesium.Cartesian3>();
-    for (const sat of satellites) {
-      if (sat.ecef && (sat.ecef.x !== 0 || sat.ecef.y !== 0 || sat.ecef.z !== 0)) {
-        satPosMap.set(sat.id, ecefToCartesian(sat.ecef));
-      } else {
-        satPosMap.set(sat.id, geodeticToCartesian(sat.lat, sat.lon, sat.altKm || 600.0));
-      }
-    }
+    const userMap = entitiesRef.current.users;
+    const accessMap = entitiesRef.current.access;
+    const currentUEIds = new Set<string>();
 
-    for (const u of users) {
-      currentUserIds.add(u.id);
-      const userPos = geodeticToCartesian(u.lat, u.lon, 0);
+    for (const ue of users) {
+      currentUEIds.add(ue.id);
+      const isSelected = selectedEntityId === ue.id;
+      const uePos = geodeticToCartesian(ue.lat, ue.lon, ue.altM || 10.0);
 
-      // 1. User marker
-      let uEntity = userEntityMap.get(u.id);
-      if (!uEntity) {
-        uEntity = viewer.entities.add({
-          id: `user_${u.id}`,
-          name: u.id,
-          position: userPos,
+      // UE Dot
+      let entity = userMap.get(ue.id);
+      if (!entity) {
+        entity = viewer.entities.add({
+          id: `ue_${ue.id}`,
+          name: ue.id,
+          show: activeLayers.showGroundStations,
+          position: uePos,
           point: {
-            pixelSize: 6,
-            color: Cesium.Color.fromCssColorString('#a855f7'), // Purple/Violet
+            pixelSize: isSelected ? 9 : 6,
+            color: Cesium.Color.fromCssColorString('#a855f7'), // Purple
             outlineColor: Cesium.Color.WHITE,
             outlineWidth: 1,
           },
           label: {
-            text: u.id,
-            font: '9px sans-serif',
-            fillColor: Cesium.Color.WHITE,
-            pixelOffset: new Cesium.Cartesian2(0, 10),
-            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 1.2e7),
+            text: ue.id,
+            show: activeLayers.showLabels,
+            font: '9px monospace',
+            fillColor: Cesium.Color.fromCssColorString('#c084fc'),
+            showBackground: true,
+            backgroundColor: Cesium.Color.fromCssColorString('rgba(15, 23, 42, 0.8)'),
+            pixelOffset: new Cesium.Cartesian2(0, -12),
+            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 1.0e7),
           },
-          show: layers.showGroundStations,
         });
-        userEntityMap.set(u.id, uEntity);
+        userMap.set(ue.id, entity);
       } else {
-        uEntity.position = new Cesium.ConstantPositionProperty(userPos);
+        entity.position = new Cesium.ConstantPositionProperty(uePos);
+        if (entity.label) {
+          entity.label.show = new Cesium.ConstantProperty(activeLayers.showLabels);
+        }
+        if (entity.point) {
+          entity.point.pixelSize = new Cesium.ConstantProperty(isSelected ? 9 : 6);
+        }
       }
 
-      // 2. Access Link to Serving Satellite
-      if (u.servingSat && satPosMap.has(u.servingSat)) {
-        const satPos = satPosMap.get(u.servingSat)!;
-        let accessEntity = accessEntityMap.get(u.id);
-
-        if (!accessEntity) {
-          accessEntity = viewer.entities.add({
-            id: `access_${u.id}`,
-            name: `Access: ${u.id} -> ${u.servingSat}`,
-            polyline: {
-              positions: [userPos, satPos],
-              width: 1.5,
-              material: createAccessLinkMaterial(),
-            },
-            show: layers.showAccess,
-          });
-          accessEntityMap.set(u.id, accessEntity);
+      // 5G NR Access Link to Serving Satellite
+      if (ue.servingSat && satMap.has(ue.servingSat)) {
+        const sat = satMap.get(ue.servingSat)!;
+        let satPos: Cesium.Cartesian3;
+        if (sat.ecef && (sat.ecef.x !== 0 || sat.ecef.y !== 0)) {
+          satPos = ecefToCartesian(sat.ecef);
         } else {
-          if (accessEntity.polyline) {
-            accessEntity.polyline.positions = new Cesium.ConstantProperty([userPos, satPos]);
+          satPos = geodeticToCartesian(sat.lat, sat.lon, sat.altKm || sat.altitudeKm || 600.0);
+        }
+
+        let access = accessMap.get(ue.id);
+        if (!access) {
+          access = viewer.entities.add({
+            id: `access_${ue.id}`,
+            name: `Access: ${ue.id} -> ${ue.servingSat}`,
+            show: activeLayers.showAccess,
+            polyline: {
+              positions: [uePos, satPos],
+              width: 1.2,
+              material: createAccessLinkMaterial(),
+              arcType: Cesium.ArcType.NONE,
+            },
+          });
+          accessMap.set(ue.id, access);
+        } else {
+          if (access.polyline) {
+            access.polyline.positions = new Cesium.ConstantProperty([uePos, satPos]);
           }
+        }
+      } else {
+        const access = accessMap.get(ue.id);
+        if (access) {
+          viewer.entities.remove(access);
+          accessMap.delete(ue.id);
         }
       }
     }
 
     // Cleanup stale users
-    for (const [id, entity] of userEntityMap.entries()) {
-      if (!currentUserIds.has(id)) {
+    for (const [id, entity] of userMap.entries()) {
+      if (!currentUEIds.has(id)) {
         viewer.entities.remove(entity);
-        userEntityMap.delete(id);
+        userMap.delete(id);
+        const access = accessMap.get(id);
+        if (access) {
+          viewer.entities.remove(access);
+          accessMap.delete(id);
+        }
       }
     }
-  }, [users, satellites, layers.showGroundStations, layers.showAccess]);
+  }, [users, satellites, selectedEntityId, activeLayers.showGroundStations, activeLayers.showAccess, activeLayers.showLabels]);
 
   // =========================================================================
   // Camera Controls
@@ -521,7 +584,7 @@ export const GlobeViewer: React.FC<GlobeViewerProps> = ({
     <div className="relative w-full h-full overflow-hidden bg-slate-950">
       <div ref={containerRef} className="w-full h-full" />
       <GlobeControls
-        layers={layers}
+        layers={activeLayers}
         onToggleLayer={toggleLayer}
         onResetCamera={handleResetCamera}
         onZoomIn={handleZoomIn}

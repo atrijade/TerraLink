@@ -190,7 +190,7 @@ bool RestApi::StartServer(int port) {
     auto statusCb = [this](const httplib::Request&, httplib::Response& res) {
         std::ostringstream ss;
         ss << "{\n"
-           << "  \"status\": \"RUNNING\",\n"
+           << "  \"status\": \"" << ((m_controller && m_controller->IsSimulationRunning()) ? "RUNNING" : "STOPPED") << "\",\n"
            << "  \"port\": " << m_port << ",\n"
            << "  \"controllerConnected\": " << (m_controller ? "true" : "false") << "\n"
            << "}";
@@ -293,10 +293,23 @@ void RestApi::StopServer() {
 // Step 2: REST JSON State Serializers
 // =========================================================================
 
+static std::atomic<double> g_simTimeSec{0.0};
+static auto g_lastOrbitTick = std::chrono::steady_clock::now();
+
 std::string RestApi::HandleGetSatellites() const {
     auto* orbit = GetOrbitEngine();
     if (!orbit) {
         return "[]";
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    double dt = std::chrono::duration<double>(now - g_lastOrbitTick).count();
+    g_lastOrbitTick = now;
+
+    if (m_controller && m_controller->IsSimulationRunning()) {
+        double currentT = g_simTimeSec.load() + dt;
+        g_simTimeSec.store(currentT);
+        orbit->UpdatePositions(currentT);
     }
 
     auto satellites = orbit->GetAllSatellites();
@@ -462,6 +475,9 @@ std::string RestApi::HandleGetMetrics() const {
     double simTime = 0.0;
     if (m_controller && m_controller->GetScheduler()) {
         simTime = m_controller->GetScheduler()->GetCurrentTime();
+    }
+    if (simTime <= 0.0) {
+        simTime = g_simTimeSec.load();
     }
 
     if (!metrics) {

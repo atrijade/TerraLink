@@ -78,10 +78,7 @@ void SimulationController::StartSimulation() {
         Logger::Logger::GetInstance().Log(Logger::LogLevel::INFO, "SimulationStart event fired.");
     });
 
-    m_scheduler->ScheduleEvent(m_config.GetDurationSeconds(), 10, EventType::SimulationStop, [this]() {
-        Logger::Logger::GetInstance().Log(Logger::LogLevel::INFO, "SimulationStop event fired.");
-        StopSimulation();
-    });
+    // Interactive mode: Keep running until explicit StopSimulation() call
 
     while (m_isRunning && !m_scheduler->IsEmpty()) {
         m_scheduler->ProcessNextEvent();

@@ -1,14 +1,32 @@
 import React, { useState } from 'react';
 import { useSimulation } from './api/useSimulation';
 import { GlobeViewer } from './components/globe/GlobeViewer';
+import type { GlobeLayerState } from './components/globe/GlobeControls';
 import { TopHeaderHud } from './components/dashboard/TopHeaderHud';
 import { TelemetryDashboard } from './components/dashboard/TelemetryDashboard';
 import { FaultInjectionPanel } from './components/controls/FaultInjectionPanel';
+import { CustomizationPanel } from './components/controls/CustomizationPanel';
 import { BackendOfflineModal } from './components/common/BackendOfflineModal';
 
 export const App: React.FC = () => {
   const [pollIntervalMs, setPollIntervalMs] = useState<number>(600);
   const [isFaultPanelOpen, setIsFaultPanelOpen] = useState<boolean>(false);
+  const [isCustomizationOpen, setIsCustomizationOpen] = useState<boolean>(false);
+
+  // Globe visual layers state
+  const [globeLayers, setGlobeLayers] = useState<GlobeLayerState>({
+    showSatellites: true,
+    showLabels: true,
+    showOrbits: true,
+    showIsl: true,
+    showFeeders: true,
+    showAccess: true,
+    showGroundStations: true,
+  });
+
+  // Dashboard components visibility
+  const [showKpis, setShowKpis] = useState<boolean>(true);
+  const [showCharts, setShowCharts] = useState<boolean>(true);
 
   const {
     satellites,
@@ -23,14 +41,37 @@ export const App: React.FC = () => {
     isBackendOnline,
     backendError,
     fetchAll,
+    isSimRunning,
     startSimulation,
     stopSimulation,
+    toggleSimulation,
+    speedMultiplier,
+    setSpeedMultiplier,
+    resetSimulation,
+    isMockMode,
+    setMockMode,
     injectLinkFailure,
     restoreLink,
   } = useSimulation(pollIntervalMs);
 
   const activeIsls = topology.filter((l) => l.active).length;
   const hasFailedLinks = topology.some((l) => !l.active || l.status === 'FAILED');
+
+  const handleToggleGlobeLayer = (key: keyof GlobeLayerState) => {
+    setGlobeLayers((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const handleSetAllGlobeLayers = (enable: boolean) => {
+    setGlobeLayers({
+      showSatellites: enable,
+      showLabels: enable,
+      showOrbits: enable,
+      showIsl: enable,
+      showFeeders: enable,
+      showAccess: enable,
+      showGroundStations: enable,
+    });
+  };
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-slate-950 flex flex-col font-sans select-none">
@@ -45,7 +86,16 @@ export const App: React.FC = () => {
         usersCount={users.length}
         hasFailedLinks={hasFailedLinks}
         isFaultPanelOpen={isFaultPanelOpen}
-        onToggleFaultPanel={() => setIsFaultPanelOpen((prev) => !prev)}
+        onToggleFaultPanel={() => {
+          setIsFaultPanelOpen((prev) => !prev);
+          if (!isFaultPanelOpen) setIsCustomizationOpen(false);
+        }}
+        isCustomizationOpen={isCustomizationOpen}
+        onToggleCustomization={() => {
+          setIsCustomizationOpen((prev) => !prev);
+          if (!isCustomizationOpen) setIsFaultPanelOpen(false);
+        }}
+        isSimRunning={isSimRunning}
         onStartSimulation={startSimulation}
         onStopSimulation={stopSimulation}
       />
@@ -59,6 +109,8 @@ export const App: React.FC = () => {
           users={users}
           selectedEntityId={selectedEntityId}
           onSelectEntity={setSelectedEntityId}
+          layers={globeLayers}
+          onToggleLayer={handleToggleGlobeLayer}
         />
 
         {/* Selected Entity Card Inspector */}
@@ -70,7 +122,7 @@ export const App: React.FC = () => {
               </span>
               <button
                 onClick={() => setSelectedEntityId(null)}
-                className="text-slate-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-slate-800"
+                className="text-slate-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-slate-800 cursor-pointer"
               >
                 ✕
               </button>
@@ -150,7 +202,7 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* Fault Injection & Operator Control Drawer */}
+        {/* Fault Injection Drawer */}
         <FaultInjectionPanel
           satellites={satellites}
           topology={topology}
@@ -161,14 +213,46 @@ export const App: React.FC = () => {
           pollIntervalMs={pollIntervalMs}
           onSetPollInterval={setPollIntervalMs}
         />
+
+        {/* Customization & Sim Turn ON / Turn OFF Drawer */}
+        <CustomizationPanel
+          isOpen={isCustomizationOpen}
+          onClose={() => setIsCustomizationOpen(false)}
+          isSimRunning={isSimRunning}
+          onToggleSimulation={toggleSimulation}
+          speedMultiplier={speedMultiplier}
+          onSetSpeedMultiplier={setSpeedMultiplier}
+          onResetSimulation={resetSimulation}
+          isMockMode={isMockMode}
+          onSetMockMode={setMockMode}
+          isBackendOnline={isBackendOnline}
+          pollIntervalMs={pollIntervalMs}
+          onSetPollInterval={setPollIntervalMs}
+          globeLayers={globeLayers}
+          onToggleGlobeLayer={handleToggleGlobeLayer}
+          onSetAllGlobeLayers={handleSetAllGlobeLayers}
+          showKpis={showKpis}
+          onToggleKpis={() => setShowKpis((prev) => !prev)}
+          showCharts={showCharts}
+          onToggleCharts={() => setShowCharts((prev) => !prev)}
+        />
       </main>
 
       {/* 3. Real-Time Telemetry HUD & Analytics (KPI Cards + Recharts) */}
-      <TelemetryDashboard metrics={metrics} history={metricHistory} />
+      <TelemetryDashboard
+        metrics={metrics}
+        history={metricHistory}
+        showKpis={showKpis}
+        showCharts={showCharts}
+      />
 
-      {/* 4. Backend Offline Warning Modal */}
-      {!isBackendOnline && (
-        <BackendOfflineModal error={backendError} onRetry={fetchAll} />
+      {/* 4. Backend Offline Warning Modal (Only shown if mock fallback is not enabled) */}
+      {!isBackendOnline && !isMockMode && (
+        <BackendOfflineModal
+          error={backendError}
+          onRetry={fetchAll}
+          onEnableMock={() => setMockMode(true)}
+        />
       )}
     </div>
   );

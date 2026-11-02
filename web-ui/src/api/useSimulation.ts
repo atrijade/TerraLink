@@ -26,18 +26,40 @@ export function useSimulation(pollIntervalMs: number = 750) {
   const [users, setUsers] = useState<User[]>([]);
   const [metrics, setMetrics] = useState<SimulationMetrics | null>(null);
   const [status, setStatus] = useState<ServerStatus>({
-    status: 'OFFLINE',
+    status: 'RUNNING',
     port: 8080,
-    controllerConnected: false,
+    controllerConnected: true,
     isMockMode: false,
   });
+  const isSimRunning = status.status === 'RUNNING';
   const [metricHistory, setMetricHistory] = useState<MetricHistoryPoint[]>([]);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isBackendOnline, setIsBackendOnline] = useState<boolean>(true);
   const [backendError, setBackendError] = useState<string | null>(null);
+  const [isMockMode, setIsMockModeState] = useState<boolean>(ntnClient.isMockFallbackEnabled());
+  const [speedMultiplier, setSpeedMultiplierState] = useState<number>(1.0);
 
   const isPollingRef = useRef<boolean>(false);
+
+  const setMockMode = useCallback((enable: boolean) => {
+    ntnClient.setEnableMockFallback(enable);
+    setIsMockModeState(enable);
+    if (enable) {
+      setIsBackendOnline(true);
+      setBackendError(null);
+    }
+  }, []);
+
+  const setSpeedMultiplier = useCallback((multiplier: number) => {
+    ntnClient.setSpeedMultiplier(multiplier);
+    setSpeedMultiplierState(multiplier);
+  }, []);
+
+  const resetSimulation = useCallback(() => {
+    ntnClient.resetSimulationTime();
+    setMetricHistory([]);
+  }, []);
 
   const fetchAll = useCallback(async () => {
     if (isPollingRef.current) return;
@@ -80,15 +102,17 @@ export function useSimulation(pollIntervalMs: number = 750) {
         });
       }
     } catch (err: unknown) {
-      setIsBackendOnline(false);
-      setStatus({
-        status: 'OFFLINE',
-        port: 8080,
-        controllerConnected: false,
-        isMockMode: false,
-      });
-      const message = err instanceof Error ? err.message : 'Connection failed';
-      setBackendError(`Unable to connect to NTN-Sim C++ Backend (Port 8080): ${message}`);
+      if (!ntnClient.isMockFallbackEnabled()) {
+        setIsBackendOnline(false);
+        setStatus({
+          status: 'OFFLINE',
+          port: 8080,
+          controllerConnected: false,
+          isMockMode: false,
+        });
+        const message = err instanceof Error ? err.message : 'Connection failed';
+        setBackendError(`Unable to connect to NTN-Sim C++ Backend (Port 8080): ${message}`);
+      }
     } finally {
       setIsLoading(false);
       isPollingRef.current = false;
@@ -102,13 +126,32 @@ export function useSimulation(pollIntervalMs: number = 750) {
   }, [fetchAll, pollIntervalMs]);
 
   const handleStart = async () => {
-    await ntnClient.startSimulation();
+    setStatus((prev) => ({ ...prev, status: 'RUNNING' }));
+    try {
+      await ntnClient.startSimulation();
+    } catch {
+      // ignore
+    }
     await fetchAll();
   };
 
   const handleStop = async () => {
-    await ntnClient.stopSimulation();
+    setStatus((prev) => ({ ...prev, status: 'STOPPED' }));
+    try {
+      await ntnClient.stopSimulation();
+    } catch {
+      // ignore
+    }
     await fetchAll();
+  };
+
+  const toggleSimulation = async (turnOn?: boolean) => {
+    const targetState = turnOn !== undefined ? turnOn : !isSimRunning;
+    if (targetState) {
+      await handleStart();
+    } else {
+      await handleStop();
+    }
   };
 
   const handleInjectFailure = async (source: string, target: string, bidirectional = true) => {
@@ -137,8 +180,15 @@ export function useSimulation(pollIntervalMs: number = 750) {
     isBackendOnline,
     backendError,
     fetchAll,
+    isSimRunning,
     startSimulation: handleStart,
     stopSimulation: handleStop,
+    toggleSimulation,
+    speedMultiplier,
+    setSpeedMultiplier,
+    resetSimulation,
+    isMockMode,
+    setMockMode,
     injectLinkFailure: handleInjectFailure,
     restoreLink: handleRestoreLink,
   };

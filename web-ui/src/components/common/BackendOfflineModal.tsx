@@ -5,11 +5,13 @@ import { ntnClient } from '../../api/ntnClient';
 interface BackendOfflineModalProps {
   error: string | null;
   onRetry: () => Promise<void>;
+  onEnableMock?: () => void;
 }
 
 export const BackendOfflineModal: React.FC<BackendOfflineModalProps> = ({
   error,
   onRetry,
+  onEnableMock,
 }) => {
   const [isRetrying, setIsRetrying] = useState<boolean>(false);
 
@@ -23,7 +25,11 @@ export const BackendOfflineModal: React.FC<BackendOfflineModalProps> = ({
   };
 
   const handleEnableMock = async () => {
-    ntnClient.setEnableMockFallback(true);
+    if (onEnableMock) {
+      onEnableMock();
+    } else {
+      ntnClient.setEnableMockFallback(true);
+    }
     await handleRetry();
   };
 
@@ -77,9 +83,9 @@ export const BackendOfflineModal: React.FC<BackendOfflineModalProps> = ({
 
             <button
               onClick={handleEnableMock}
-              className="w-full py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs rounded-xl transition border border-slate-700/60"
+              className="w-full py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs rounded-xl transition border border-slate-700/60 cursor-pointer"
             >
-              Or switch back to Simulated Mock Engine
+              Switch to Offline In-Browser Simulation
             </button>
           </div>
         </div>

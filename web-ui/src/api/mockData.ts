@@ -10,9 +10,41 @@ import type {
 
 // Global mock state
 let mockSimRunning = true;
-let mockSimStartTime = Date.now();
 let mockSimTime = 0.0;
+let mockSpeedMultiplier = 1.0;
+let mockLastWallClock = Date.now();
 const severedLinks = new Set<string>();
+
+export function advanceMockSimTime(): number {
+  const now = Date.now();
+  const dtSec = (now - mockLastWallClock) / 1000.0;
+  mockLastWallClock = now;
+  if (mockSimRunning) {
+    mockSimTime += Math.max(0, dtSec) * mockSpeedMultiplier;
+  }
+  return mockSimTime;
+}
+
+export function getMockSimTime(): number {
+  return mockSimTime;
+}
+
+export function isMockSimRunning(): boolean {
+  return mockSimRunning;
+}
+
+export function setMockSpeedMultiplier(multiplier: number): void {
+  mockSpeedMultiplier = Math.max(0.1, multiplier);
+}
+
+export function getMockSpeedMultiplier(): number {
+  return mockSpeedMultiplier;
+}
+
+export function resetMockSimulationTime(): void {
+  mockSimTime = 0.0;
+  mockLastWallClock = Date.now();
+}
 
 const NUM_PLANES = 4;
 const SATS_PER_PLANE = 6;
@@ -28,7 +60,8 @@ function makeLinkId(src: string, dst: string): string {
 /**
  * Calculates satellite positions for a Walker constellation at simulated time t (seconds).
  */
-export function generateMockSatellites(tSec: number): Satellite[] {
+export function generateMockSatellites(tSec?: number): Satellite[] {
+  const simT = tSec !== undefined ? tSec : advanceMockSimTime();
   const satellites: Satellite[] = [];
   const meanMotion = (2 * Math.PI) / ORBIT_PERIOD_SEC;
 
@@ -37,7 +70,7 @@ export function generateMockSatellites(tSec: number): Satellite[] {
     const planePhaseOffset = (p * (2 * Math.PI / NUM_PLANES) * 0.5);
 
     for (let s = 0; s < SATS_PER_PLANE; s++) {
-      const meanAnomaly = (s * 2 * Math.PI) / SATS_PER_PLANE + planePhaseOffset + meanMotion * tSec;
+      const meanAnomaly = (s * 2 * Math.PI) / SATS_PER_PLANE + planePhaseOffset + meanMotion * simT;
       const satId = `SAT_P${p}_S${s}`;
 
       // Orbital coordinates in orbital plane
@@ -51,7 +84,7 @@ export function generateMockSatellites(tSec: number): Satellite[] {
       const zEci = yOrb * Math.sin(ORBIT_INCLINATION_RAD);
 
       // Account for Earth's rotation
-      const earthRotAngle = (tSec * (2 * Math.PI / 86400.0)) % (2 * Math.PI);
+      const earthRotAngle = (simT * (2 * Math.PI / 86400.0)) % (2 * Math.PI);
       const xEcef = xEci * Math.cos(earthRotAngle) + yEci * Math.sin(earthRotAngle);
       const yEcef = -xEci * Math.sin(earthRotAngle) + yEci * Math.cos(earthRotAngle);
       const zEcef = zEci;
@@ -235,8 +268,7 @@ export function generateMockUsers(satellites: Satellite[]): User[] {
  */
 export function generateMockMetrics(): SimulationMetrics {
   const isDegraded = severedLinks.size > 0;
-  const elapsed = mockSimRunning ? (Date.now() - mockSimStartTime) / 1000 : mockSimTime;
-  mockSimTime = elapsed;
+  advanceMockSimTime();
 
   const baseLatency = isDegraded ? 38.4 : 24.2;
   const pdr = isDegraded ? 95.8 : 99.2;
@@ -290,12 +322,13 @@ export function getMockStatus(): ServerStatus {
 
 export function startMockSimulation(): CommandResponse {
   mockSimRunning = true;
-  mockSimStartTime = Date.now() - mockSimTime * 1000;
+  mockLastWallClock = Date.now();
   return { success: true, status: 'STARTED' };
 }
 
 export function stopMockSimulation(): CommandResponse {
   mockSimRunning = false;
+  mockLastWallClock = Date.now();
   return { success: true, status: 'STOPPED' };
 }
 
